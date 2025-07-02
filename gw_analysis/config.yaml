@@ -1,0 +1,90 @@
+# Configuration file for GW_PERTURB analysis
+
+# Sample information file
+sample_info_file: "../references/sample_info.xlsx"
+sample_info_tab: "sample_info"  # Specify which tab/sheet to read from the Excel file
+
+# Sample IDs - will be automatically discovered from sample_info.xlsx
+# Leave empty to process all samples, or specify specific samples
+# TESTING: Process 2 paired GEX/guide libraries from pool3 for testing
+#sample_ids: ["gex_batch_1", "gex_batch_2", "gex_batch_3", "guide_batch_1", "guide_batch_2", "guide_batch_3"]
+sample_ids: []
+
+# File paths
+paths:
+  replace_file: "../references/replace.96.txt"
+  barcodes_file: "../references/barcodes.96.txt"
+
+# Analysis parameters
+analysis:
+  genome_types: ["all"]
+  index_prefix: "nascent"
+  threads: 24
+  kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
+  strand: "unstranded"
+  # Source/processing combinations for pipeline outputs
+  combinations:
+    - ["main", "raw"]
+    - ["all", "merged"]
+  
+# Cell calling parameters
+cell_calling:
+  # Default parameters (will be overridden by sample_info.tsv values)
+  defaults:
+    expected_cells: 5000
+    min_umi_threshold: 100
+    emptydrops_lower: 100
+    saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+# Sublibrary combination configuration
+combination:
+  # Define combination groups - each group becomes one combined file
+  # Each group combines sublibraries from the specified pools
+  groups:
+    # Example: Combine all pools into one file
+    all_pools:
+      pools: []  # Empty list means ALL pools (auto-detected from sample_info.xlsx)
+      name: "all_combined"  # Output file prefix
+    
+    # Example: Combine specific pools (uncomment and modify as needed)
+    # early_timepoints:
+    #   pools: ["pool1", "pool2"]  # List specific pools to combine
+    #   name: "early_combined"
+    # 
+    # late_timepoints:
+    #   pools: ["pool3", "pool4"]
+    #   name: "late_combined"
+  
+  # Alternative simple configuration (if you just want all pools combined)
+  # Set to true to combine ALL pools into a single file, or false for per-pool combination
+  combine_all_pools: true
+
+# Barcode recovery parameters
+barcode_recovery:
+  # Maximum number of reads to process (None or omit for all reads)
+  max_reads_recovery: null
+  # Maximum shift to search for barcodes (default: 4)
+  max_shift: 4
+
+# Undetermined recovery parameters
+undetermined_recovery:
+  # Maximum number of files to keep open simultaneously
+  max_open_files: 5000
+
+# QC analysis parameters
+qc_analysis:
+  # Guide counting cutoffs for QC metrics
+  guide_cutoffs: [1, 2, 3, 4, 5]
+  
+  # Guide reference file path
+  guide_reference: "../references/all_guides.20240917.tsv"
+
+# Sublibrary filtering parameters
+sublibrary_filtering:
+  # Default cutoff for guide assignment
+  guide_assignment_cutoff: 5
+  # Skip barcode filtering to keep all barcodes (recommended for proper cell calling)
+  skip_barcode_filtering: true
+  # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
+  # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
+  min_umi_filter: 2

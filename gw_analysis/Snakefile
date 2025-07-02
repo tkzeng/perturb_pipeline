@@ -1,0 +1,1369 @@
+# NOTE: This pipeline should be run from the 'kb' conda environment
+# All tools (kallisto-bustools, fastqc, python packages) are available in this environment
+#
+# SUBLIBRARY COMBINATION: The rules for combining sublibraries across pools
+# have been moved to Snakefile_sublibrary_combination for better organization.
+# To run sublibrary combination:
+#   snakemake -s Snakefile_sublibrary_combination all_combined --configfile config.yaml
+
+configfile: "config.yaml"
+
+import os
+import pandas as pd
+from datetime import datetime
+from scripts.pipeline_utils import get_guide_gex_pairings
+
+
+# Cache for sample info to avoid multiple file reads
+_sample_info_cache = None
+
+# Load sample information from Excel file
+def load_sample_info():
+    global _sample_info_cache
+    if _sample_info_cache is not None:
+        return _sample_info_cache
+    
+    sample_info_file = config["sample_info_file"]
+    if not os.path.exists(sample_info_file):
+        raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
+    
+    # Read the specified tab/sheet from the Excel file - no default
+    if "sample_info_tab" not in config:
+        raise ValueError("sample_info_tab must be specified in config.yaml")
+    sheet_name = config["sample_info_tab"]
+    df = pd.read_excel(sample_info_file, sheet_name=sheet_name)
+    
+    # Filter out 'other' samples - we don't process these
+    df = df[df['sample_type'].isin(['gex', 'guide'])]
+    
+    # Filter by sample_ids config if specified
+    if config["sample_ids"]:
+        df = df[df['sample_id'].isin(config["sample_ids"])]
+    
+    _sample_info_cache = df
+    return df
+
+# Get sample IDs from sample info or config
+def get_sample_ids():
+    if config["sample_ids"]:
+        return config["sample_ids"]
+    
+    sample_df = load_sample_info()
+    if sample_df.empty:
+        raise ValueError("No samples found in sample info file")
+    return sample_df['sample_id'].tolist()
+
+# Function to find fastq files based on source and processing state
+def find_fastq_file(sample_id, read, source=None, processing=None):
+    """Find FASTQ file based on source and processing state
+    
+    Args:
+        sample_id: Full sample ID in format 'pool:sample' (e.g., 'pool1:gex_1')
+        read: R1 or R2
+        source: main, undetermined, or all
+        processing: raw, recovered, or merged
+    """
+    import glob
+    
+    # Extract pool and sample name from sample_id
+    pool = extract_pool(sample_id)
+    sample_name = extract_sample(sample_id)
+    
+    # Define path patterns for most cases - use sample_name for filenames
+    path_patterns = {
+        ("main", "raw"): None,  # Special handling below
+        ("main", "recovered"): f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/main/{sample_id}_recovered_{read}.fastq.gz",
+        ("undetermined", "raw"): f"/scratch/users/tkzeng/gw_analysis/undetermined_fastqs/{sample_id}_{read}.fastq.gz",
+        ("undetermined", "recovered"): f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/undetermined/{sample_id}_recovered_{read}.fastq.gz",
+        ("all", "merged"): f"/scratch/users/tkzeng/gw_analysis/merged_fastqs/{sample_id}_all_merged_{read}.fastq.gz"
+    }
+    
+    # Special handling for main/raw
+    if source == "main" and processing == "raw":
+        if sample_name == "Undetermined":
+            import subprocess
+            # Get the fastq_dir from any sample in this pool
+            sample_df = load_sample_info()
+            pool_samples = sample_df[sample_df['pool'] == pool]
+            if not pool_samples.empty:
+                fastq_dir = pool_samples.iloc[0]['fastq_dir']
+                cmd = f"find {fastq_dir} -name '*Undetermined*{read}*.fastq.gz' | grep -v 'I1\\|I2' | head -1"
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                if result.stdout.strip():
+                    return result.stdout.strip()
+        
+        sample_df = load_sample_info()
+        if not sample_df.empty:
+            # Look up by full sample_id (which includes pool)
+            sample_row = sample_df[sample_df['sample_id'] == sample_id]
+            if not sample_row.empty:
+                fastq_dir = sample_row.iloc[0]['fastq_dir']
+                # Try pattern with lane info first (e.g., _L001_) - use sample_name for filename
+                search_pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_L*_{read}_001.fastq.gz")
+                matches = glob.glob(search_pattern)
+                if matches:
+                    return matches[0]
+                # Try pattern without lane info (e.g., gex_1_S1_R1_001.fastq.gz)
+                search_pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_{read}_001.fastq.gz")
+                matches = glob.glob(search_pattern)
+                if matches:
+                    return matches[0]
+    
+    # Use dictionary lookup for standard patterns
+    key = (source, processing)
+    if key in path_patterns:
+        return path_patterns[key]
+    
+    raise FileNotFoundError(f"Could not find {read} file for sample {sample_id} with source={source}, processing={processing}")
+
+# Use the centralized function from pipeline_utils
+# (Removed duplicate code - now using pipeline_utils.get_guide_gex_pairings)
+
+# Get sample IDs and filter by type
+def get_samples_by_type(sample_type):
+    sample_df = load_sample_info()
+    return sample_df[sample_df['sample_type'] == sample_type]['sample_id'].tolist()
+
+# Helper functions for new sample_id format
+def extract_pool(sample_id):
+    """Extract pool from sample_id format 'pool:sample'"""
+    if ':' not in sample_id:
+        raise ValueError(f"Invalid sample_id format: {sample_id}. Expected 'pool:sample'")
+    return sample_id.split(':')[0]
+
+def extract_sample(sample_id):
+    """Extract sample name from sample_id format 'pool:sample'"""
+    if ':' not in sample_id:
+        raise ValueError(f"Invalid sample_id format: {sample_id}. Expected 'pool:sample'")
+    return sample_id.split(':')[1]
+
+# Get pool for a given sample (now just extracts from sample_id)
+def get_sample_pool(sample_id):
+    """Extract pool from sample_id (e.g., 'pool1:gex_1' -> 'pool1')"""
+    return extract_pool(sample_id)
+
+# Combination group functions moved to Snakefile_sublibrary_combination
+
+IDS = get_sample_ids()
+GEX_IDS = get_samples_by_type('gex')
+GUIDE_IDS = get_samples_by_type('guide')
+# Get guide-GEX pairings from the centralized function
+guide_to_gex, gex_to_guide = get_guide_gex_pairings(config.get('sample_info_file', 'sample_info.xlsx'))
+
+# Print sample summary
+sample_df = load_sample_info()
+print("=" * 60)
+print("SAMPLE DETECTION SUMMARY")
+print("=" * 60)
+print(f"Total samples detected: {len(IDS)}")
+
+if not sample_df.empty:
+    print("\nPOOL\tGEXSAMP\tGUIDESAMP")
+    print("-" * 40)
+    for pool in sorted(sample_df['pool'].unique()):
+        pool_samples = sample_df[sample_df['pool'] == pool]
+        gex_in_pool = pool_samples[pool_samples['sample_type'] == 'gex']['sample_id'].tolist()
+        guide_in_pool = pool_samples[pool_samples['sample_type'] == 'guide']['sample_id'].tolist()
+        
+        # Print each GEX-Guide pair in the pool
+        max_samples = max(len(gex_in_pool), len(guide_in_pool))
+        for i in range(max_samples):
+            # Extract just the sample name for display
+            gex_sample = extract_sample(gex_in_pool[i]) if i < len(gex_in_pool) else ""
+            guide_sample = extract_sample(guide_in_pool[i]) if i < len(guide_in_pool) else ""
+            pool_name = pool if i == 0 else ""  # Only show pool name on first row
+            print(f"{pool_name}\t{gex_sample}\t{guide_sample}")
+
+print("=" * 60)
+
+def get_all_outputs(combinations=None, as_dict=False):
+    """Generate all expected output files including QC metrics
+    
+    IMPORTANT: Directory Structure for QC Dashboard
+    -----------------------------------------------
+    The Streamlit dashboard parses metadata from directory structure following these principles:
+    
+    1. Top-level categories define plot/data types (e.g., cell_calling, per_cell, saturation)
+    2. Second level is always {source}_{processing} (e.g., main_raw, all_merged)
+    3. Subsequent levels vary by category but follow consistent patterns within each category
+    4. All metadata comes from directory names, not filenames (except for backwards compatibility)
+    5. Scale (linear/log) should be a directory level, not part of the filename
+    
+    When adding new outputs:
+    - Keep consistent directory depth within each category
+    - Use descriptive directory names that will become filter options
+    - Consider if your output fits an existing category before creating a new one
+    - If creating a new category, update the dashboard's parse_path_metadata() function
+    
+    The dashboard automatically creates filters from directory structure, so thoughtful
+    organization improves user experience.
+    """
+    if combinations is None:
+        # Get combinations from config
+        combinations = config.get('analysis', {}).get('combinations', [['main', 'raw'], ['all', 'merged']])
+        # Convert list of lists to list of tuples
+        combinations = [tuple(combo) for combo in combinations]
+    
+    outputs_dict = {
+        'read_stats': [],
+        'cell_calling': [],
+        'qc_metrics': [],
+        'saturation': [],
+        'consolidated': [],
+        'report': ["../analysis_results/qc_report/DONE.txt"]
+    }
+    
+    sample_df = load_sample_info()
+    
+    # First, iterate through all samples to generate per-sample outputs
+    for _, row in sample_df.iterrows():
+        pool = row['pool']
+        sample_id = row['sample_id']  # e.g., "pool1:gex_1"
+        sample_name = extract_sample(sample_id)  # e.g., "gex_1"
+        sample_type = row['sample_type']
+        
+        for source, processing in combinations:
+            # Read statistics - use sample_id in directories
+            if sample_type == 'gex':
+                outputs_dict['read_stats'].append(
+                    f"../analysis_results/{sample_id}/qc/{sample_id}_all_{source}_{processing}_read_statistics.tsv"
+                )
+            else:  # guide
+                outputs_dict['read_stats'].append(
+                    f"../analysis_results/{sample_id}/qc/{sample_id}_guide_{source}_{processing}_read_statistics.tsv"
+                )
+            
+            # Cell calling and QC metrics for GEX samples only
+            if sample_type == 'gex':
+                # Cell calling outputs - use sample_id for directory structure
+                outputs_dict['cell_calling'].append(
+                    f"../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling"
+                )
+                outputs_dict['cell_calling'].append(
+                    f"../analysis_results/qc_report/plots/cell_calling/{source}_{processing}/{sample_id}"
+                )
+                outputs_dict['cell_calling'].append(
+                    f"../analysis_results/qc_report/plots/cell_calling/{source}_{processing}/{sample_id}.complete"
+                )
+                
+                # QC metrics - all three levels
+                for level in ['by_sample.tsv', 'by_biological_sample.tsv', 'by_well.tsv']:
+                    outputs_dict['qc_metrics'].append(
+                        f"../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/{level}"
+                    )
+                
+                # Per-cell plots
+                outputs_dict['qc_metrics'].append(
+                    f"../analysis_results/qc_report/plots/per_cell/{source}_{processing}/{sample_id}"
+                )
+    
+    # Saturation analysis for main/raw only - iterate through samples
+    if ('main', 'raw') in combinations:
+        for _, row in sample_df.iterrows():
+            pool = row['pool']
+            sample_id = row['sample_id']  # e.g., "pool1:gex_1"
+            sample_name = extract_sample(sample_id)  # e.g., "gex_1"
+            sample_type = row['sample_type']
+            
+            if sample_type == 'gex':
+                # GEX saturation - use sample_id for directory structure
+                outputs_dict['saturation'].append(
+                    f"../analysis_results/qc_report/data/per_sample/main_raw/{sample_id}/saturation/umi_saturation.tsv"
+                )
+                outputs_dict['saturation'].append(
+                    f"../analysis_results/qc_report/plots/saturation/main_raw/gex/{sample_id}"
+                )
+            elif sample_type == 'guide':
+                # Guide saturation - use sample_id for directory structure
+                outputs_dict['saturation'].append(
+                    f"../analysis_results/qc_report/data/per_sample/main_raw/{sample_id}/saturation/guide_umi_saturation.tsv"
+                )
+                outputs_dict['saturation'].append(
+                    f"../analysis_results/qc_report/plots/saturation/main_raw/guide/{sample_id}"
+                )
+        
+        # Pool statistics - uses the filtered sample_df so pool1000/1001 are excluded when needed
+        pools = sample_df['pool'].unique()
+        outputs_dict['qc_metrics'].extend(
+            expand("../analysis_results/qc_report/data/per_pool/main_raw/{pool}/pool_statistics.tsv",
+                   pool=pools)
+        )
+        outputs_dict['consolidated'].append("../analysis_results/qc_report/data/consolidated/main_raw/by_pool.tsv")
+    
+    # Consolidated outputs for each combination
+    for source, processing in combinations:
+        outputs_dict['consolidated'].extend([
+            f"../analysis_results/qc_report/data/consolidated/{source}_{processing}/all_metrics.tsv",
+            f"../analysis_results/qc_report/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
+            f"../analysis_results/qc_report/data/consolidated/{source}_{processing}/by_well.tsv",
+            f"../analysis_results/qc_report/plots/consolidated_general/{source}_{processing}",
+            f"../analysis_results/qc_report/plots/consolidated_cell_based/{source}_{processing}",
+            f"../analysis_results/qc_report/plots/consolidated_{source}_{processing}.complete"
+        ])
+    
+    if as_dict:
+        return outputs_dict
+    else:
+        return [item for sublist in outputs_dict.values() for item in sublist]
+
+rule all:
+    input:
+        get_all_outputs()  # Default: main+raw and all+merged 
+
+
+rule count_reads:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", "main", "raw"),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", "main", "raw")
+    output:
+        #"../analysis_results/{sample_id}/counts.txt"
+    log:
+        "../analysis_logs/count_reads_{sample_id}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS)
+    resources:
+        mem_mb=32000,
+    threads:
+        4
+    shell:
+        """
+        mkdir -p $(dirname {output}) ../analysis_logs
+        
+        echo "R1_reads,R2_reads" > {output}
+        R1_COUNT=$(pigz -cd -p {threads} {input.fq1} | echo $((`wc -l`/4)))
+        R2_COUNT=$(pigz -cd -p {threads} {input.fq2} | echo $((`wc -l`/4)))
+        echo "$R1_COUNT,$R2_COUNT" >> {output}
+        """
+
+# Note: Using --em (Expectation Maximization) algorithm for multimapping reads
+# --em is a hidden kb-python option that uses EM to probabilistically assign multimapping reads
+# Alternative is --mm which does simple even splitting (1/n) across all mapped genes
+# EM is more sophisticated but slower; cannot be used with --split or --cm options
+rule kallisto_gex:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", wildcards.source, wildcards.processing),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
+        replace=config["paths"]["replace_file"],
+        barcodes=config["paths"]["barcodes_file"],
+        index_idx="../references/nascent_all/index.idx",
+        t2g="../references/nascent_all/t2g.txt",
+        cdna="../references/nascent_all/cdna.txt",
+        nascent="../references/nascent_all/nascent.txt",
+        # Ensure barcode recovery is done first if processing recovered reads
+        recovery_done=lambda wildcards: f"../data/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
+        # Script dependency
+        script="scripts/run_kb_count.py"
+    output:
+        #kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/kb_info.json",
+        #h5ad="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/counts_unfiltered/adata.h5ad"
+    log:
+        "../analysis_logs/kallisto_gex_{sample_id}_{type}_{source}_{processing}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        type="all",  # Only match "all" - prevents conflict with guide rule
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        out="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}",
+        strand=config["analysis"]["strand"]
+    resources:
+        mem_mb=128000,
+    threads:
+        24
+    shell:
+        """
+        mkdir -p $(dirname {params.out}) ../analysis_logs
+        
+        # Remove existing output directories to avoid conflicts
+        rm -rf {params.out}
+        
+        # Note: Using --mm for fractional assignment of multimapping reads (even splitting)
+        # Alternative: --em uses expectation maximization algorithm (hidden option)
+        # Warning: --em can drop reads when genes have no unique reads (s=0 condition in bustools)
+        
+        # Run with configured strand option
+        python scripts/run_kb_count.py \
+            nac {params.strand} \
+            {input.fq1} {input.fq2} {params.out} {threads} \
+            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            --cdna {input.cdna} --nascent {input.nascent} --mm &> {log}
+        """
+
+rule kallisto_guide:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", wildcards.source, wildcards.processing),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
+        barcodes=config["paths"]["barcodes_file"],
+        replace=config["paths"]["replace_file"],
+        index_idx="../references/kite/mismatch.idx",
+        t2g="../references/kite/t2g.txt",
+        # Ensure barcode recovery is done first if processing recovered reads
+        recovery_done=lambda wildcards: f"../data/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
+        # Script dependency
+        script="scripts/run_kb_count.py"
+    output:
+        #kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_guide_{source}_{processing}/kb_info.json",
+        #h5ad="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_guide_{source}_{processing}/counts_unfiltered/adata.h5ad"
+    log:
+        "../analysis_logs/kallisto_guide_{sample_id}_{source}_{processing}.log"
+    wildcard_constraints:
+        sample_id="|".join(GUIDE_IDS),  # Only match guide sample IDs
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        out="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_guide_{source}_{processing}",
+        strand=config["analysis"]["strand"]
+    resources:
+        mem_mb=128000,
+    threads:
+        24
+    shell:
+        """
+        mkdir -p $(dirname {params.out}) ../analysis_logs
+        
+        # Remove existing output directories to avoid conflicts
+        rm -rf {params.out}
+        
+        # Run with configured strand option
+        python scripts/run_kb_count.py \
+            kite {params.strand} \
+            {input.fq1} {input.fq2} {params.out} {threads} \
+            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} &> {log}
+        """
+
+
+rule kallisto_gex_subsampled:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", "main", "raw"),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", "main", "raw"),
+        read_counts="../analysis_results/{sample_id}/counts.txt",
+        replace=config["paths"]["replace_file"],
+        barcodes=config["paths"]["barcodes_file"],
+        index_idx="../references/nascent_all/index.idx",
+        t2g="../references/nascent_all/t2g.txt",
+        cdna="../references/nascent_all/cdna.txt",
+        nascent="../references/nascent_all/nascent.txt",
+        script="scripts/run_kb_count.py"
+    output:
+        #kb_info="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-{fraction}/kb_all/kb_info.json",
+        #h5ad="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-{fraction}/kb_all/counts_unfiltered/adata.h5ad"
+    log:
+        "../analysis_logs/kallisto_gex_subsampled_{sample_id}_{fraction}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        fraction="0\\.1|0\\.25|0\\.5|0\\.75"
+    params:
+        out="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-{fraction}/kb_all",
+        strand=config["analysis"]["strand"]
+    resources:
+        mem_mb=32000,  # Reduced memory for subsampled data
+    threads:
+        config["analysis"]["threads"]
+    shell:
+        """
+        mkdir -p $(dirname {params.out})
+        
+        # Read total read count and calculate target reads
+        R1_COUNT=$(tail -n 1 {input.read_counts} | cut -d',' -f1)
+        TARGET_READS=$(echo "$R1_COUNT * {wildcards.fraction}" | bc | cut -d'.' -f1)
+        
+        # Remove existing output directories to avoid conflicts
+        rm -rf {params.out}
+        
+        # Run with configured strand option
+        python scripts/run_kb_count.py \
+            nac {params.strand} \
+            {input.fq1} {input.fq2} {params.out} {threads} \
+            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            --cdna {input.cdna} --nascent {input.nascent} --mm \
+            --max-reads $TARGET_READS &> {log}
+        """
+
+rule kallisto_guide_subsampled:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", "main", "raw"),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", "main", "raw"),
+        read_counts="../analysis_results/{sample_id}/counts.txt",
+        replace=config["paths"]["replace_file"],
+        barcodes=config["paths"]["barcodes_file"],
+        index_idx="../references/kite/mismatch.idx",
+        t2g="../references/kite/t2g.txt",
+        script="scripts/run_kb_count.py"
+    output:
+        #kb_info="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-{fraction}/kb_guide/kb_info.json",
+        #h5ad="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-{fraction}/kb_guide/counts_unfiltered/adata.h5ad"
+    log:
+        "../analysis_logs/kallisto_guide_subsampled_{sample_id}_{fraction}.log"
+    wildcard_constraints:
+        sample_id="|".join(GUIDE_IDS),  # Only match guide sample IDs
+        fraction="0\\.1|0\\.25|0\\.5|0\\.75"
+    params:
+        out="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-{fraction}/kb_guide",
+        strand=config["analysis"]["strand"]
+    resources:
+        mem_mb=16000,  # Reduced memory for guide subsampled data
+    threads:
+        config["analysis"]["threads"]
+    shell:
+        """
+        mkdir -p $(dirname {params.out})
+        
+        # Read total read count and calculate target reads
+        R1_COUNT=$(tail -n 1 {input.read_counts} | cut -d',' -f1)
+        TARGET_READS=$(echo "$R1_COUNT * {wildcards.fraction}" | bc | cut -d'.' -f1)
+        
+        # Remove existing output directories to avoid conflicts
+        rm -rf {params.out}
+        
+        # Run with configured strand option
+        python scripts/run_kb_count.py \
+            kite {params.strand} \
+            {input.fq1} {input.fq2} {params.out} {threads} \
+            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            --max-reads $TARGET_READS &> {log}
+        """
+
+rule generate_combined_whitelist:
+    input:
+        barcodes=config["paths"]["barcodes_file"],
+        script="scripts/generate_barcode_combinations.py"
+    output:
+        #combined="../references/barcodes_combined.txt"
+    log:
+        "../analysis_logs/generate_combined_whitelist.log"
+    shell:
+        """
+        python {input.script} {input.barcodes} {output.combined} &> {log}
+        """
+
+rule inspect_bus_files:
+    input:
+        combined_whitelist="../references/barcodes_combined.txt",
+        kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/kb_info.json"
+    output:
+        #inspect_summary="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/inspect_summary.txt",
+        ## The key inspect JSON files that calculate_read_statistics needs
+        #output_inspect="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/output_inspect.json",
+        #output_unfiltered_inspect="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/output.unfiltered_inspect.json",
+        #output_modified_unfiltered_inspect="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/output_modified.unfiltered_inspect.json"
+    log:
+        "../analysis_logs/inspect_bus_{sample_id}_{type}_{source}_{processing}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS),  # Only match sample IDs in IDS (excludes 'other')
+    #    type="all|guide",
+    #    source="main|undetermined|all",
+    #    processing="raw|recovered|merged"
+    params:
+        kb_dir="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}"
+    shell:
+        """
+        # Find all BUS files and inspect them
+        find {params.kb_dir} {params.kb_dir}_forward -name "*.bus" -type f 2>/dev/null | while read bus_file; do
+            # Create output filename based on BUS file path
+            inspect_file="${{bus_file%.bus}}_inspect.json"
+            
+            bustools inspect -o "$inspect_file" -w {input.combined_whitelist} "$bus_file"
+            
+            # Extract key metrics and append to summary
+            echo "=== $bus_file ===" >> {output.inspect_summary}
+            if [ -f "$inspect_file" ]; then
+                cat "$inspect_file" >> {output.inspect_summary}
+                echo "" >> {output.inspect_summary}
+            fi
+        done
+        """
+
+# New rules for merging FASTQs before kallisto
+# This ensures proper UMI deduplication across all read sources
+
+rule merge_all_fastqs:
+    """Merge all FASTQs for a sample: main raw + main recovered + undetermined raw + undetermined recovered"""
+    input:
+        # Main reads (raw)
+        main_raw_r1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", "main", "raw"),
+        main_raw_r2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", "main", "raw"),
+        main_recovered_r1=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/main/{wildcards.sample_id}_recovered_R1.fastq.gz",
+        main_recovered_r2=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/main/{wildcards.sample_id}_recovered_R2.fastq.gz",
+        # Undetermined reads (raw)
+        undetermined_raw_r1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", "undetermined", "raw"),
+        undetermined_raw_r2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", "undetermined", "raw"),
+        undetermined_recovered_r1=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R1.fastq.gz",
+        undetermined_recovered_r2=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R2.fastq.gz",
+        # Ensure all prerequisites are done
+        deps=lambda wildcards: [
+            f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/main/{wildcards.sample_id}_stats.txt",
+            f"/scratch/users/tkzeng/gw_analysis/undetermined_fastqs/{wildcards.sample_id}_R1.fastq.gz",
+            f"/scratch/users/tkzeng/gw_analysis/barcode_recovery/undetermined/{wildcards.sample_id}_stats.txt"
+        ]
+    output:
+        #merged_r1="/scratch/users/tkzeng/gw_analysis/merged_fastqs/{sample_id}_all_merged_R1.fastq.gz",
+        #merged_r2="/scratch/users/tkzeng/gw_analysis/merged_fastqs/{sample_id}_all_merged_R2.fastq.gz"
+    log:
+        "../analysis_logs/merge_all_fastqs_{sample_id}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS)
+    threads: 4
+    resources:
+        mem_mb=16000,
+    shell:
+        """
+        mkdir -p $(dirname {output.merged_r1}) ../analysis_logs
+        
+        # Merge R1 files
+        cat {input.main_raw_r1} {input.main_recovered_r1} {input.undetermined_raw_r1} {input.undetermined_recovered_r1} > {output.merged_r1}
+        
+        # Merge R2 files  
+        cat {input.main_raw_r2} {input.main_recovered_r2} {input.undetermined_raw_r2} {input.undetermined_recovered_r2} > {output.merged_r2}
+        """
+
+
+
+rule filter_and_annotate_sublibrary:
+    input:
+        # GEX unfiltered kallisto output - specific files for dependency tracking
+        gex_h5ad="/scratch/users/tkzeng/gw_analysis/{gex_sample_id}/kb_all_{source}_{processing}/counts_unfiltered/adata.h5ad",
+        # Guide unfiltered kallisto output - specific file for dependency tracking
+        guide_h5ad=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}/counts_unfiltered/adata.h5ad",
+        # Config file
+        config_file="config.yaml",
+        script="scripts/sublibrary_annotation.py"
+    output:
+        # Filtered output directory containing h5ad and MTX files
+        output_dir=directory("/scratch/users/tkzeng/gw_analysis/{gex_sample_id}/kb_all_{source}_{processing}/counts_filtered"),
+        # Annotated h5ad file
+        annotated_h5ad="/scratch/users/tkzeng/gw_analysis/{gex_sample_id}/kb_all_{source}_{processing}/counts_filtered/adata.h5ad",
+        # MTX file as representative output
+        mtx_file="/scratch/users/tkzeng/gw_analysis/{gex_sample_id}/kb_all_{source}_{processing}/counts_filtered/cells_x_genes.total.mtx"
+    log:
+        "../analysis_logs/filter_and_annotate_sublibrary_{gex_sample_id}_{source}_{processing}.log"
+    wildcard_constraints:
+        gex_sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        gex_sample=lambda wildcards: extract_sample(wildcards.gex_sample_id),  # Just the sample name
+        guide_sample=lambda wildcards: extract_sample(gex_to_guide[wildcards.gex_sample_id]),  # Just the sample name
+        gex_sample_id="{gex_sample_id}",  # Full sample_id for lookups
+        guide_sample_id=lambda wildcards: gex_to_guide[wildcards.gex_sample_id],  # Full sample_id for lookups
+        guide_cutoff=config['sublibrary_filtering']['guide_assignment_cutoff'],
+        skip_filtering=config['sublibrary_filtering']['skip_barcode_filtering'],
+        # Directory paths for the script
+        gex_kb_dir="/scratch/users/tkzeng/gw_analysis/{gex_sample_id}/kb_all_{source}_{processing}",
+        guide_kb_dir=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}"
+    threads: 4
+    resources:
+        mem_mb=256000,
+    shell:
+        """
+        mkdir -p ../analysis_logs
+        
+        # Clean and create output directory
+        rm -rf {output.output_dir}
+        mkdir -p {output.output_dir}
+        
+        # Build command
+        CMD="python3 {input.script} \
+            --gex-kb-dir {params.gex_kb_dir} \
+            --guide-kb-dir {params.guide_kb_dir} \
+            --output-dir {output.output_dir} \
+            --cutoff {params.guide_cutoff} \
+            --config {input.config_file} \
+            --sample-id {params.gex_sample_id} \
+            --guide-sample-id {params.guide_sample_id} \
+            --source {wildcards.source} \
+            --processing {wildcards.processing}"
+        
+        # Add skip-filtering flag if configured
+        if [ "{params.skip_filtering}" = "True" ]; then
+            CMD="$CMD --skip-filtering"
+        fi
+        
+        # Execute
+        $CMD &> {log}
+        """
+
+rule fastp_qc:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", "main", "raw"),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", "main", "raw")
+    output:
+        #json="../analysis_results/{sample_id}/qc/fastp_report.json",
+        #html="../analysis_results/{sample_id}/qc/fastp_report.html"
+    params:
+        outdir="../analysis_results/{sample_id}/qc",
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        sample=lambda wildcards: extract_sample(wildcards.sample_id)
+    threads:
+        4
+    log:
+        "../analysis_logs/fastp_qc_{sample_id}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS)
+    shell:
+        """
+        mkdir -p {params.outdir} ../analysis_logs
+        
+        fastp -i {input.fq1} -I {input.fq2} \
+              --json {output.json} --html {output.html} \
+              --thread {threads} \
+              --dont_eval_duplication \
+              --report_title "{params.pool}_{params.sample}_QC_Report"
+        """
+
+
+rule calculate_read_statistics:
+    input:
+        kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/kb_info.json",
+        # Get inspect JSON from inspect_bus_files rule output
+        inspect_json="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/output_modified.unfiltered_inspect.json",
+        h5ad="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}/counts_unfiltered/adata.h5ad",
+        script="scripts/calculate_read_statistics.py"
+    output:
+        stats="../analysis_results/{sample_id}/qc/{sample_id}_{type}_{source}_{processing}_read_statistics.tsv"
+    log:
+        "../analysis_logs/calculate_read_statistics_{sample_id}_{type}_{source}_{processing}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS),  # Match all sample IDs
+    #    type="all|guide",
+    #    source="main|undetermined|all",
+    #    processing="raw|recovered|merged"
+    params:
+        kb_dir="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_{type}_{source}_{processing}",
+        sample_id="{sample_id}"
+    resources:
+        mem_mb=64000,  # 64GB for loading count matrix
+    threads:
+        1
+    shell:
+        """
+        mkdir -p $(dirname {output.stats}) ../analysis_logs
+        
+        python3 {input.script} \
+            {params.kb_dir} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --output {output.stats} &> {log}
+        """
+
+rule cell_calling_analysis:
+    input:
+        kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_{source}_{processing}/kb_info.json",
+        h5ad="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_{source}_{processing}/counts_filtered/adata.h5ad",
+        script="scripts/cell_calling_analysis.py"
+    output:
+        ## Directory containing all cell calling outputs
+        #cell_calling_dir=directory("../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling"),
+        ## Key summary files for downstream use
+        #summary="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling/results.tsv",
+        #emptydrops_summary="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling/emptydrops_summary.tsv"
+    log:
+        "../analysis_logs/cell_calling_{sample_id}_{source}_{processing}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        kb_dir="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_{source}_{processing}",
+        sample_id="{sample_id}"
+    threads:
+        16
+    resources:
+        mem_mb=262144,  # 256GB for large matrices with EmptyDrops
+    shell:
+        """
+        mkdir -p ../analysis_logs
+        
+        ml R/4.4
+        
+        # Clean and create the cell_calling subdirectory
+        rm -rf {output.cell_calling_dir}
+        mkdir -p {output.cell_calling_dir}
+        
+        python3 {input.script} \
+            --h5ad_file {input.h5ad} \
+            --kb_dir {params.kb_dir} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --output_dir {output.cell_calling_dir} \
+            --ncores {threads} &> {log}
+        """
+
+rule cell_calling_plots:
+    input:
+        h5ad="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_{source}_{processing}/counts_filtered/adata.h5ad",
+        cell_calling_dir="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling",
+        summary="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling/results.tsv",
+        read_stats="../analysis_results/{sample_id}/qc/{sample_id}_all_{source}_{processing}_read_statistics.tsv",
+        script="scripts/cell_calling_plots_no_json.py"
+    output:
+        plot_dir=directory("../analysis_results/qc_report/plots/cell_calling/{source}_{processing}/{sample_id}"),
+        complete="../analysis_results/qc_report/plots/cell_calling/{source}_{processing}/{sample_id}.complete"
+    params:
+        plot_dir="../analysis_results/qc_report/plots",
+        sample_id="{sample_id}"
+    log:
+        "../analysis_logs/cell_calling_plots_{sample_id}_{source}_{processing}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    threads: 1  # Plotting is single-threaded
+    resources:
+        mem_mb=32000  # Much less memory needed for plotting
+    shell:
+        """
+        mkdir -p ../analysis_logs
+        
+        # Clean output directory for this specific sample with new structure
+        output_dir="../analysis_results/qc_report/plots/cell_calling/{wildcards.source}_{wildcards.processing}/{wildcards.sample_id}"
+        rm -rf "$output_dir"
+        mkdir -p "$output_dir"
+        
+        python3 {input.script} \
+            --h5ad_file {input.h5ad} \
+            --cell_calling_dir {input.cell_calling_dir} \
+            --read_stats {input.read_stats} \
+            --sample-id {params.sample_id} \
+            --plot_dir {params.plot_dir} \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} &> {log}
+        
+        # Create sentinel file to indicate successful completion
+        touch {output.complete}
+        """
+
+
+
+rule calculate_qc_metrics_stratified:
+    """Calculate comprehensive QC metrics at three stratification levels"""
+    input:
+        # Annotated h5ad with both GEX and guide data
+        h5ad="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_{source}_{processing}/counts_filtered/adata.h5ad",
+        # Cell calling results directory
+        cell_calling_dir="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling",
+        # Read statistics for GEX
+        read_stats="../analysis_results/{sample_id}/qc/{sample_id}_all_{source}_{processing}_read_statistics.tsv",
+        # Read statistics for paired guide sample
+        guide_stats=lambda wildcards: f"../analysis_results/{gex_to_guide[wildcards.sample_id]}/qc/{gex_to_guide[wildcards.sample_id]}_guide_{wildcards.source}_{wildcards.processing}_read_statistics.tsv",
+        script="scripts/calculate_qc_metrics_by_biological_sample.py"
+    output:
+        qc_metrics_sample="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/by_sample.tsv",
+        qc_metrics_bio="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/by_biological_sample.tsv",
+        qc_metrics_well="../analysis_results/qc_report/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/by_well.tsv",
+        plots_dir=directory("../analysis_results/qc_report/plots/per_cell/{source}_{processing}/{sample_id}")
+    log:
+        "../analysis_logs/qc_metrics_stratified_{sample_id}_{source}_{processing}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        sample_id="{sample_id}",  # Full sample_id for the script
+        pool=lambda wildcards: extract_pool(wildcards.sample_id)
+    resources:
+        mem_mb=64000,
+    threads: 1
+    shell:
+        """
+        mkdir -p ../analysis_logs
+        # Clean and create wildcard-specific plot directory with new structure
+        PLOT_DIR="../analysis_results/qc_report/plots/per_cell/{wildcards.source}_{wildcards.processing}/{wildcards.sample_id}"
+        rm -rf "$PLOT_DIR"
+        mkdir -p "$PLOT_DIR"
+        
+        # Clean and create QC metrics directory
+        QC_DIR="../analysis_results/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{wildcards.sample_id}/qc_metrics"
+        rm -rf "$QC_DIR"
+        mkdir -p "$QC_DIR"
+        
+        # Calculate by sample (replaces calculate_qc_metrics_after_cell_calling)
+        python3 {input.script} \
+            --h5ad {input.h5ad} \
+            --cell-calling-dir {input.cell_calling_dir} \
+            --read-stats {input.read_stats} \
+            --guide-read-stats {input.guide_stats} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --stratify-by sample \
+            --output {output.qc_metrics_sample} \
+            --plot-dir "$PLOT_DIR" \
+            --pool {params.pool} \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} &> {log}
+        
+        # Calculate by biological sample
+        python3 {input.script} \
+            --h5ad {input.h5ad} \
+            --cell-calling-dir {input.cell_calling_dir} \
+            --read-stats {input.read_stats} \
+            --guide-read-stats {input.guide_stats} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --stratify-by biological_sample \
+            --output {output.qc_metrics_bio} \
+            --plot-dir "$PLOT_DIR" \
+            --pool {params.pool} \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} &>> {log}
+        
+        # Calculate by well
+        python3 {input.script} \
+            --h5ad {input.h5ad} \
+            --cell-calling-dir {input.cell_calling_dir} \
+            --read-stats {input.read_stats} \
+            --guide-read-stats {input.guide_stats} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --stratify-by well \
+            --output {output.qc_metrics_well} \
+            --plot-dir "$PLOT_DIR" \
+            --pool {params.pool} \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} &>> {log}
+        """
+
+rule umi_saturation_analysis:
+    input:
+        # Main data (100% point) - using the main raw output
+        kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_main_raw/kb_info.json",
+        main_unfiltered="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_main_raw/counts_unfiltered/adata.h5ad",
+        cell_calling_results="../analysis_results/qc_report/data/per_sample/main_raw/{sample_id}/cell_calling/results.tsv",
+        read_stats="../analysis_results/{sample_id}/qc/{sample_id}_all_main_raw_read_statistics.tsv",
+        # Subsampled matrices - Snakemake will automatically generate these (unfiltered)
+        subsampled_01="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.1/kb_all/counts_unfiltered/adata.h5ad",
+        subsampled_025="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.25/kb_all/counts_unfiltered/adata.h5ad",
+        subsampled_05="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.5/kb_all/counts_unfiltered/adata.h5ad",
+        subsampled_075="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.75/kb_all/counts_unfiltered/adata.h5ad",
+        script="scripts/umi_saturation_analysis.py"
+    output:
+        saturation="../analysis_results/qc_report/data/per_sample/main_raw/{sample_id}/saturation/umi_saturation.tsv",
+        plot_dir=directory("../analysis_results/qc_report/plots/saturation/main_raw/gex/{sample_id}")
+    log:
+        "../analysis_logs/umi_saturation_gex_{sample_id}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS)  # Only match GEX sample IDs
+    params:
+        cell_calling_dir="../analysis_results/qc_report/data/per_sample/main_raw/{sample_id}/cell_calling",
+        sample_id="{sample_id}"
+    threads:
+        6  # Increased for parallel processing
+    shell:
+        """
+        mkdir -p $(dirname {output.saturation}) ../analysis_logs
+        
+        # Clean output directory for this sample
+        rm -rf {output.plot_dir}
+        mkdir -p {output.plot_dir}
+        
+        # Clean saturation data directory
+        SATURATION_DIR=$(dirname {output.saturation})
+        rm -rf "$SATURATION_DIR"
+        mkdir -p "$SATURATION_DIR"
+        
+        python3 {input.script} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --read_stats {input.read_stats} \
+            --output_tsv {output.saturation} \
+            --output_plot {output.plot_dir}/{wildcards.sample_id}_umi_saturation.png \
+            --cell_calling_dir {params.cell_calling_dir} \
+            --sample_type gex \
+            --source main \
+            --processing raw &> {log}
+        """
+
+rule umi_saturation_analysis_guide:
+    input:
+        # Main data (100% point) - using the main raw output
+        kb_info="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_guide_main_raw/kb_info.json",
+        main_unfiltered="/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_guide_main_raw/counts_unfiltered/adata.h5ad",
+        read_stats="../analysis_results/{sample_id}/qc/{sample_id}_guide_main_raw_read_statistics.tsv",
+        # Depend on the paired GEX cell calling results
+        cell_calling_results=lambda wildcards: f"../analysis_results/qc_report/data/per_sample/main_raw/{guide_to_gex[wildcards.sample_id]}/cell_calling/results.tsv",
+        # Subsampled guide matrices - Snakemake will automatically generate these (unfiltered)
+        subsampled_01="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.1/kb_guide/counts_unfiltered/adata.h5ad",
+        subsampled_025="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.25/kb_guide/counts_unfiltered/adata.h5ad",
+        subsampled_05="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.5/kb_guide/counts_unfiltered/adata.h5ad",
+        subsampled_075="/scratch/users/tkzeng/tmp/umi_sat_{sample_id}-0.75/kb_guide/counts_unfiltered/adata.h5ad",
+        script="scripts/umi_saturation_analysis.py"
+    output:
+        saturation="../analysis_results/qc_report/data/per_sample/main_raw/{sample_id}/saturation/guide_umi_saturation.tsv",
+        plot_dir=directory("../analysis_results/qc_report/plots/saturation/main_raw/guide/{sample_id}")
+    log:
+        "../analysis_logs/umi_saturation_guide_{sample_id}.log"
+    wildcard_constraints:
+        sample_id="|".join(GUIDE_IDS)  # Only match guide sample IDs
+    params:
+        # Cell calling directory is from the paired GEX sample
+        cell_calling_dir=lambda wildcards: f"../analysis_results/qc_report/data/per_sample/main_raw/{guide_to_gex[wildcards.sample_id]}/cell_calling",
+        sample_id="{sample_id}"
+    threads:
+        4
+    shell:
+        """
+        mkdir -p $(dirname {output.saturation}) ../analysis_logs
+        
+        # Clean output directory for this sample
+        rm -rf {output.plot_dir}
+        mkdir -p {output.plot_dir}
+        
+        # Clean saturation data directory
+        SATURATION_DIR=$(dirname {output.saturation})
+        rm -rf "$SATURATION_DIR"
+        mkdir -p "$SATURATION_DIR"
+        
+        python3 {input.script} \
+            --sample-id {params.sample_id} \
+            --config config.yaml \
+            --read_stats {input.read_stats} \
+            --output_tsv {output.saturation} \
+            --output_plot {output.plot_dir}/{wildcards.sample_id}_guide_umi_saturation.png \
+            --cell_calling_dir {params.cell_calling_dir} \
+            --sample_type guide \
+            --source main \
+            --processing raw &> {log}
+        """
+
+rule check_undetermined_barcodes:
+    input:
+        script="scripts/recover_undetermined_barcodes_simple.py"
+    output:
+        #report="/scratch/users/tkzeng/gw_analysis/undetermined_index/{pool}/recovery_summary.txt"
+    log:
+        "../analysis_logs/undetermined_recovery_{pool}.log"
+    params:
+        fastq_dir=lambda wildcards: f"../data/May2025_GW_{wildcards.pool}",
+        outdir="/scratch/users/tkzeng/gw_analysis/undetermined_index/{pool}",
+        max_open_files=config["undetermined_recovery"]["max_open_files"]
+    resources:
+        mem_mb=32000  # 32GB minimum
+    threads:
+        4  # Multiple threads for pigz compression
+    shell:
+        """
+        mkdir -p {params.outdir} ../analysis_logs
+        
+        # Find undetermined FASTQ files for this pool
+        UNDETERMINED_R1=$(find {params.fastq_dir} -name "*Undetermined*R1*.fastq.gz" | head -1)
+        UNDETERMINED_R2=$(find {params.fastq_dir} -name "*Undetermined*R2*.fastq.gz" | head -1)
+        
+        if [ -f "$UNDETERMINED_R1" ] && [ -f "$UNDETERMINED_R2" ]; then
+            python3 -u {input.script} \
+                --fastq-r1 "$UNDETERMINED_R1" \
+                --fastq-r2 "$UNDETERMINED_R2" \
+                --indices "../references/split_lp_primer.xlsx" \
+                --output-dir {params.outdir} &> {log}
+        else
+            echo "Undetermined FASTQ files not found for {wildcards.pool}" > {output.report}
+            echo "Searched in: {params.fastq_dir}" >> {output.report}
+            echo "R1 file: $UNDETERMINED_R1" >> {output.report}
+            echo "R2 file: $UNDETERMINED_R2" >> {output.report}
+        fi
+        """
+
+rule create_undetermined_fastq:
+    input:
+        recovery_summary=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/undetermined_index/{extract_pool(wildcards.sample_id)}/recovery_summary.txt",
+        sample_info="../references/sample_info.xlsx",
+        primer_info="../references/split_lp_primer.xlsx",
+        script="scripts/create_undetermined_single_sample.py"
+    output:
+        #r1="/scratch/users/tkzeng/gw_analysis/undetermined_fastqs/{sample_id}_R1.fastq.gz",
+        #r2="/scratch/users/tkzeng/gw_analysis/undetermined_fastqs/{sample_id}_R2.fastq.gz"
+    log:
+        "../analysis_logs/create_undetermined_{sample_id}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS)
+    params:
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        recovery_dir=lambda wildcards: f"/scratch/users/tkzeng/gw_analysis/undetermined_index/{extract_pool(wildcards.sample_id)}",
+        output_dir="/scratch/users/tkzeng/gw_analysis/undetermined_fastqs",
+        sample_id="{sample_id}"
+    threads:
+        1
+    resources:
+        mem_mb=8000
+    shell:
+        """
+        mkdir -p {params.output_dir} ../analysis_logs
+        
+        python {input.script} \
+            --sample-info {input.sample_info} \
+            --primer-info {input.primer_info} \
+            --recovery-dir {params.recovery_dir} \
+            --sample-id {params.sample_id} \
+            --output-r1 {output.r1} \
+            --output-r2 {output.r2} \
+            --min-reads 1000 &> {log}
+        """
+
+
+rule barcode_recovery:
+    input:
+        fq1=lambda wildcards: find_fastq_file(wildcards.sample_id, "R1", wildcards.source, "raw"),
+        fq2=lambda wildcards: find_fastq_file(wildcards.sample_id, "R2", wildcards.source, "raw"),
+        barcodes=config["paths"]["barcodes_file"],
+        script="scripts/recover_barcodes_simple.py"
+    output:
+        #r1_recovered="/scratch/users/tkzeng/gw_analysis/barcode_recovery/{source}/{sample_id}_recovered_R1.fastq.gz",
+        #r2_recovered="/scratch/users/tkzeng/gw_analysis/barcode_recovery/{source}/{sample_id}_recovered_R2.fastq.gz",
+        #stats="/scratch/users/tkzeng/gw_analysis/barcode_recovery/{source}/{sample_id}_stats.txt"
+    log:
+        "../analysis_logs/barcode_recovery_{sample_id}_{source}.log"
+    #wildcard_constraints:
+    #    sample_id="|".join(IDS),
+    #    source="main|undetermined"
+    params:
+        outdir="/scratch/users/tkzeng/gw_analysis/barcode_recovery/{source}",
+        output_prefix="/scratch/users/tkzeng/gw_analysis/barcode_recovery/{source}/{sample_id}",
+        max_reads=config["barcode_recovery"]["max_reads_recovery"],
+        max_shift=config["barcode_recovery"]["max_shift"]
+    resources:
+        mem_mb=32000,
+    threads:
+        1
+    shell:
+        """
+        mkdir -p {params.outdir} ../analysis_logs
+        
+        # Build command with optional parameters
+        CMD="python {input.script} \
+            {input.fq1} \
+            {input.fq2} \
+            {params.output_prefix} \
+            --barcode-file {input.barcodes} \
+            --max-shift {params.max_shift}"
+        
+        # Add max-reads if specified
+        if [ -n "{params.max_reads}" ] && [ "{params.max_reads}" != "None" ]; then
+            CMD="$CMD --max-reads {params.max_reads}"
+        fi
+        
+        $CMD &> {log}
+        """
+
+rule consolidate_qc_metrics:
+    """Consolidate QC metrics across all samples using simple concatenation"""
+    input:
+        # QC metrics after cell calling for all GEX samples (already includes read stats and guide stats)
+        qc_metrics=lambda wildcards: [f"../analysis_results/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_sample.tsv" 
+                                      for _, row in load_sample_info().iterrows() 
+                                      if row['sample_type'] == 'gex'],
+        # Biological sample QC metrics
+        bio_metrics=lambda wildcards: [f"../analysis_results/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_biological_sample.tsv" 
+                                       for _, row in load_sample_info().iterrows() 
+                                       if row['sample_type'] == 'gex'],
+        # Well QC metrics
+        well_metrics=lambda wildcards: [f"../analysis_results/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_well.tsv" 
+                                        for _, row in load_sample_info().iterrows() 
+                                        if row['sample_type'] == 'gex'],
+        # Pool statistics (only for main/raw since undetermined doesn't apply to other combinations)
+        pool_stats=lambda wildcards: expand("../analysis_results/qc_report/data/per_pool/main_raw/{pool}/pool_statistics.tsv",
+                                          pool=load_sample_info()['pool'].unique()) if wildcards.source == 'main' and wildcards.processing == 'raw' else [],
+        script="scripts/consolidate_qc_simple.py"
+    output:
+        combined="../analysis_results/qc_report/data/consolidated/{source}_{processing}/all_metrics.tsv",
+        combined_bio="../analysis_results/qc_report/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
+        combined_well="../analysis_results/qc_report/data/consolidated/{source}_{processing}/by_well.tsv"
+    log:
+        "../analysis_logs/consolidate_qc_metrics_{source}_{processing}.log"
+    wildcard_constraints:
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    shell:
+        """
+        mkdir -p $(dirname {output.combined}) ../analysis_logs
+        
+        # Clean only the specific output files for this source/processing combination
+        rm -f {output.combined} {output.combined_bio} {output.combined_well}
+        
+        # Sample-level consolidation (simple concatenation)
+        python {input.script} \
+            --input-files {input.qc_metrics} \
+            --output {output.combined} \
+            --add-pool &> {log}
+        
+        # Biological sample-level consolidation (simple concatenation)
+        python {input.script} \
+            --input-files {input.bio_metrics} \
+            --output {output.combined_bio} \
+            --add-pool &>> {log}
+        
+        # Well-level consolidation (simple concatenation)
+        python {input.script} \
+            --input-files {input.well_metrics} \
+            --output {output.combined_well} \
+            --add-pool &>> {log}
+        """
+
+
+rule visualize_consolidated_qc:
+    """Generate visualizations for consolidated QC metrics"""
+    input:
+        sample_metrics="../analysis_results/qc_report/data/consolidated/{source}_{processing}/all_metrics.tsv",
+        bio_metrics="../analysis_results/qc_report/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
+        well_metrics="../analysis_results/qc_report/data/consolidated/{source}_{processing}/by_well.tsv",
+        script="scripts/visualize_aggregated_qc_metrics_no_json.py"
+    output:
+        # Track both consolidated plot directories
+        plot_dir_general=directory("../analysis_results/qc_report/plots/consolidated_general/{source}_{processing}"),
+        plot_dir_cell_based=directory("../analysis_results/qc_report/plots/consolidated_cell_based/{source}_{processing}"),
+        # Sentinel file to track completion
+        complete="../analysis_results/qc_report/plots/consolidated_{source}_{processing}.complete"
+    params:
+        output_dir="../analysis_results/qc_report/plots"
+    threads: 8
+    wildcard_constraints:
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    log:
+        "../analysis_logs/visualize_consolidated_qc_{source}_{processing}.log"
+    shell:
+        """
+        echo "Generating QC metric visualizations for {wildcards.source} {wildcards.processing}..." | tee {log}
+        
+        # Clean output directories for this source/processing combination
+        rm -rf "../analysis_results/qc_report/plots/consolidated_general/{wildcards.source}_{wildcards.processing}"
+        rm -rf "../analysis_results/qc_report/plots/consolidated_cell_based/{wildcards.source}_{wildcards.processing}"
+        mkdir -p "../analysis_results/qc_report/plots/consolidated_general/{wildcards.source}_{wildcards.processing}"
+        mkdir -p "../analysis_results/qc_report/plots/consolidated_cell_based/{wildcards.source}_{wildcards.processing}"
+        
+        # Sample-level metrics
+        python {input.script} \
+            --input {input.sample_metrics} \
+            --output_dir {params.output_dir} \
+            --stratify_by sample \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} \
+            --threads {threads} &> {log}
+        
+        # Biological sample metrics
+        python {input.script} \
+            --input {input.bio_metrics} \
+            --output_dir {params.output_dir} \
+            --stratify_by biological_sample \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} \
+            --threads {threads} &>> {log}
+        
+        # Well-level metrics (heatmaps)
+        python {input.script} \
+            --input {input.well_metrics} \
+            --output_dir {params.output_dir} \
+            --stratify_by well \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} \
+            --threads {threads} &>> {log}
+        
+        # Create sentinel file to indicate successful completion
+        touch {output.complete}
+        """
+
+
+rule process_pool_metrics:
+    """Consolidate and visualize pool-level metrics (only for main/raw)"""
+    input:
+        pool_stats=expand("../analysis_results/qc_report/data/per_pool/main_raw/{pool}/pool_statistics.tsv",
+                         pool=load_sample_info()['pool'].unique()),
+        consolidate_script="scripts/consolidate_qc_simple.py",
+        visualize_script="scripts/visualize_aggregated_qc_metrics_no_json.py"
+    output:
+        combined_pool="../analysis_results/qc_report/data/consolidated/main_raw/by_pool.tsv"
+    params:
+        output_dir="../analysis_results/qc_report/plots"
+    threads: 1
+    log:
+        "../analysis_logs/process_pool_metrics.log"
+    shell:
+        """
+        # Consolidate pool statistics
+        python {input.consolidate_script} \
+            --input-files {input.pool_stats} \
+            --output {output.combined_pool} &> {log}
+        
+        # Generate visualizations
+        python {input.visualize_script} \
+            --input {output.combined_pool} \
+            --output_dir {params.output_dir} \
+            --stratify_by pool \
+            --source main \
+            --processing raw \
+            --threads {threads} &>> {log}
+        """
+
+
+rule generate_qc_report:
+    """Package QC outputs for laptop viewing with Streamlit dashboard"""
+    input:
+        # Get all QC report files from the categorized outputs
+        files=lambda wildcards: [f for category in ['read_stats', 'cell_calling',
+                                             'qc_metrics', 'saturation',
+                                             'consolidated']
+                          for f in get_all_outputs(as_dict=True)[category]],
+        sample_info=config['sample_info_file'],
+        dashboard_script="scripts/streamlit_qc_dashboard_optimized.py",
+        package_script="scripts/package_qc_for_laptop_fast_no_json.py"
+    output:
+        done="../analysis_results/qc_report/DONE.txt"
+    params:
+        timestamp=lambda wildcards: datetime.now().strftime("%Y%m%d_%H%M%S")
+    threads: 8
+    log:
+        "../analysis_logs/generate_qc_report.log"
+    shell:
+        """
+        # Create temporary file with input list
+        TMPFILE=$(mktemp /tmp/qc_files_XXXXXX.txt)
+        for f in {input.files}; do
+            echo "$f" >> $TMPFILE
+        done
+        
+        # Run packaging script
+        python -u {input.package_script} \
+            --input-file-list $TMPFILE \
+            --sample-info {input.sample_info} \
+            --dashboard-script {input.dashboard_script} \
+            --output-archive ../analysis_results/qc_dashboard_{params.timestamp}.tar.gz \
+            --per-cell-method-filter EmptyDrops_FDR001 \
+            --guide-cutoff-filter 1,2 \
+            --threads {threads} &> {log}
+        
+        # Clean up temp file
+        rm -f $TMPFILE
+        
+        # Create done file
+        echo "QC Dashboard package created: ../analysis_results/qc_dashboard_{params.timestamp}.tar.gz" > {output.done}
+        echo "Generated at: $(date)" >> {output.done}
+        """
+
+
+rule calculate_pool_statistics:
+    """Calculate pool-level statistics including undetermined read fraction"""
+    input:
+        # All sample count files for the pool
+        sample_counts=lambda wildcards: [f"../analysis_results/{row['sample_id']}/counts.txt"
+                                        for _, row in load_sample_info().iterrows() 
+                                        if row['pool'] == wildcards.pool],
+        # Undetermined count file - using existing count_reads rule
+        undetermined_counts="../analysis_results/{pool}:Undetermined/counts.txt",
+        script="scripts/calculate_pool_statistics.py"
+    output:
+        stats="../analysis_results/qc_report/data/per_pool/main_raw/{pool}/pool_statistics.tsv"
+    log:
+        "../analysis_logs/calculate_pool_statistics_{pool}.log"
+    params:
+        pool="{pool}"
+    resources:
+        mem_mb=1000
+    shell:
+        """
+        mkdir -p $(dirname {output.stats}) ../analysis_logs
+        
+        python3 {input.script} \
+            --pool {params.pool} \
+            --sample-counts {input.sample_counts} \
+            --undetermined-counts {input.undetermined_counts} \
+            --output {output.stats} &> {log}
+        """
+
+

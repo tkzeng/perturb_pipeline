@@ -1,0 +1,42 @@
+Metric	Description
+expected_cells	User-defined or estimated target number of cells
+fraction_cells_with_guides_cutoff{N}	Fraction of cells with at least one guide above cutoff N UMIs
+guide_mapped_reads	Number of guide reads that mapped to guide reference (before filtering for valid barcodes)
+guide_pcr_duplication_rate_pct	(1 - guide UMIs / guide corrected reads) * 100
+guide_read_pct	Guide reads / (GEX reads + Guide reads) * 100
+guide_reads_per_cell	Average guide reads per cell (total reads / n_cells)
+guide_reads_per_umi	Guide total reads / guide total UMIs
+guide_reads_with_correctable_barcodes	Number of guide reads that mapped with valid/correctable barcodes
+guide_total_reads	Total number of demultiplexed reads for guide sample
+guide_total_umis	Total number of UMIs in guide count matrix (not limited to called cells)
+guide_umis_in_cells_pct	Percentage of total guide UMIs found in called cells (vs empty droplets)
+guide_umis_per_cell	Total guide UMIs / n_cells
+guides_per_cell_cutoff{N}	Average number of guides per cell detected above cutoff N UMIs
+mapped_reads	Number of reads that mapped to the reference transcriptome (before filtering for valid barcodes)
+mean_genes_per_cell	Average number of genes detected per cell
+mean_genes_per_noncell	Average genes detected in empty droplets
+mean_pct_mito_cells	Average percentage of mitochondrial reads in cells
+mean_pct_mito_noncells	Average mitochondrial percentage in empty droplets
+mean_umis_per_cell	Sum(UMIs in cells) / n_cells
+mean_umis_per_noncell	Average UMIs in empty droplets
+median_genes_per_cell	Median number of genes detected per cell
+median_genes_per_noncell	Median genes detected in empty droplets
+median_pct_mito_cells	Median percentage of mitochondrial reads in cells
+median_pct_mito_noncells	Median mitochondrial percentage in empty droplets
+median_umis_per_cell	Median UMI count per cell
+median_umis_per_noncell	Median UMI count in empty droplets
+umis_in_cells_pct	Percentage of total UMIs found in called cells (vs empty droplets)
+n_cells	Number of barcodes/droplets called as cells by each method
+pcr_duplication_rate_pct	(1 - total UMIs in unfiltered count matrix / corrected reads) * 100
+pct_mapped_reads	Mapped reads / total reads * 100 (before filtering for valid barcodes)
+pct_usable_reads	Mapped reads with correctable barcodes / total reads * 100
+reads_per_umi	Total reads / total UMIs in unfiltered count matrix
+reads_per_umi_in_cells	Total reads / total UMIs in called cells
+reads_with_correctable_barcodes	Number of reads that mapped with valid/correctable barcodes
+total_guides_detected_cutoff{N}	Number of unique guides detected across all cells above cutoff N
+total_reads	Total number of demultiplexed reads for this sample
+total_reads_per_cell	Average reads per cell (total reads / n_cells)
+total_targeted_genes_cutoff{N}	Number of unique genes targeted by detected guides above cutoff N
+total_umis	Total number of UMIs in unfiltered count matrix
+total_umis_in_cells	Total UMIs summed across all called cells
+umis_per_guide_per_cell_cutoff{N}	Average UMIs per guide in cells with guides (cutoff N)

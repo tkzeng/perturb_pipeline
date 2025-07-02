@@ -1,0 +1,99 @@
+# Directories to exclude
+analysis_logs/
+analysis_results/
+data/
+misc/
+gw_analysis/statin_perturb/
+gw_analysis/scripts/UNUSED/
+gw_analysis/misc/
+gw_analysis/.snakemake/
+
+# External software/repos
+gw_analysis/bustools/
+gw_analysis/kb_python/
+references/ParseBiosciences-Pipeline.1.2.1/
+references/kite/
+references/nascent_all/
+
+# Specific large files
+references/gencode.v46.annotation.db
+find_large_files.sh
+gw_analysis/CLAUDE.md
+
+# Large files (>50MB)
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.parquet
+*.feather
+*.tar
+*.tar.gz
+*.zip
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.db
+*.sqlite
+*.sqlite3
+*.bam
+*.sam
+*.fasta
+*.fastq
+*.fa
+*.fq
+*.bed
+*.bigwig
+*.bw
+*.bigbed
+*.bb
+*.vcf
+*.bcf
+*.gff
+*.gtf
+*.gff3
+*.mat
+*.rds
+*.rdata
+*.RData
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.env
+.venv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Logs
+*.log
+logs/

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Single-Cell Perturbation QC Report</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/lightbox2/2.11.4/css/lightbox.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body>
+    <div id="app" x-data="qcReport" x-init="init()">
+        <!-- Navigation Sidebar -->
+        <nav id="sidebar">
+            <h2>QC Report</h2>
+            <div class="nav-section">
+                <ul>
+                    <li><a href="#" @click.prevent="currentView = 'overview'" 
+                           :class="{'active': currentView === 'overview'}" class="nav-link">Overview</a></li>
+                    <li><a href="#" @click.prevent="currentView = 'cell-calling'" 
+                           :class="{'active': currentView === 'cell-calling'}" class="nav-link">Cell Calling</a></li>
+                    <li><a href="#" @click.prevent="currentView = 'saturation'" 
+                           :class="{'active': currentView === 'saturation'}" class="nav-link">UMI Saturation</a></li>
+                    <li><a href="#" @click.prevent="currentView = 'per-cell-qc'" 
+                           :class="{'active': currentView === 'per-cell-qc'}" class="nav-link">Per-Cell QC</a></li>
+                    <li><a href="#" @click.prevent="currentView = 'compare-samples'" 
+                           :class="{'active': currentView === 'compare-samples'}" class="nav-link">Compare Samples</a></li>
+                    <li><a href="#" @click.prevent="currentView = 'consolidated'" 
+                           :class="{'active': currentView === 'consolidated'}" class="nav-link">Consolidated Metrics</a></li>
+                </ul>
+            </div>
+            
+            <!-- Filters -->
+            <div id="filters">
+                <h3>Filters</h3>
+                <div class="filter-group">
+                    <label for="pool-filter">Pool:</label>
+                    <select id="pool-filter" class="filter-select" x-model="filters.pool">
+                        <option value="">All Pools</option>
+                        <template x-for="pool in availablePools" :key="pool">
+                            <option :value="pool" x-text="pool"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="sample-filter">Sample:</label>
+                    <select id="sample-filter" class="filter-select" x-model="filters.sample">
+                        <option value="">All Samples</option>
+                        <template x-for="sample in availableSamples" :key="sample">
+                            <option :value="sample" x-text="sample"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="method-filter">Method:</label>
+                    <select id="method-filter" class="filter-select" x-model="filters.method">
+                        <option value="">All Methods</option>
+                        <template x-for="method in availableMethods" :key="method">
+                            <option :value="method" x-text="method"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="source-filter">Source:</label>
+                    <select id="source-filter" class="filter-select" x-model="filters.source">
+                        <option value="">All Sources</option>
+                        <option value="main">Main</option>
+                        <option value="undetermined">Undetermined</option>
+                        <option value="all">All</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="processing-filter">Processing:</label>
+                    <select id="processing-filter" class="filter-select" x-model="filters.processing">
+                        <option value="">All Processing</option>
+                        <option value="raw">Raw</option>
+                        <option value="recovered">Recovered</option>
+                        <option value="merged">Merged</option>
+                    </select>
+                </div>
+                <button @click="resetFilters()" class="btn btn-secondary">Reset Filters</button>
+            </div>
+            
+            <!-- Info -->
+            <div class="sidebar-info">
+                <p>Generated: <span x-text="generatedDate"></span></p>
+                <p>Samples: <span x-text="totalSamples"></span></p>
+                <p x-show="filteredPlots.length < plots.length" class="filter-info">
+                    Showing <span x-text="filteredPlots.length"></span> of <span x-text="plots.length"></span> plots
+                </p>
+            </div>
+        </nav>
+        
+        <!-- Main Content -->
+        <main id="content">
+            <div x-show="loading" class="loading-spinner">Loading QC Report...</div>
+            
+            <div x-show="!loading" x-cloak id="content-area">
+                <!-- Overview Section -->
+                <div x-show="currentView === 'overview'" class="content-section">
+                    <h1>QC Report Overview</h1>
+                    <p>This report contains quality control metrics for single-cell perturbation sequencing data.</p>
+                    
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value" x-text="gexSamples.length"></div>
+                            <div class="stat-label">GEX Samples</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" x-text="guideSamples.length"></div>
+                            <div class="stat-label">Guide Samples</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" x-text="availablePools.length"></div>
+                            <div class="stat-label">Pools</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" x-text="plots.length"></div>
+                            <div class="stat-label">QC Plots</div>
+                        </div>
+                    </div>
+                    
+                    <h2>Sample Information</h2>
+                    <div class="table-container">
+                        <table id="sample-table" class="display"></table>
+                    </div>
+                </div>
+                
+                <!-- Cell Calling Section -->
+                <div x-show="currentView === 'cell-calling'" class="content-section">
+                    <h1>Cell Calling Analysis</h1>
+                    <p>Barcode rank plots showing the results of different cell calling methods.</p>
+                    
+                    <div class="image-gallery">
+                        <template x-for="plot in filteredPlotsForType('cell_calling')" :key="plot.path">
+                            <div class="image-card">
+                                <a :href="plot.path" data-lightbox="gallery">
+                                    <img :src="plot.path" :alt="plot.title">
+                                </a>
+                                <div class="image-card-title" x-text="plot.title"></div>
+                            </div>
+                        </template>
+                    </div>
+                    
+                    <div x-show="filteredPlotsForType('cell_calling').length === 0" class="no-results">
+                        No cell calling plots found matching the current filters.
+                    </div>
+                </div>
+                
+                <!-- Saturation Section -->
+                <div x-show="currentView === 'saturation'" class="content-section">
+                    <h1>UMI Saturation Analysis</h1>
+                    <p>Saturation curves showing the relationship between sequencing depth and detected features.</p>
+                    
+                    <div class="tab-container">
+                        <div class="tab-buttons">
+                            <button @click="saturationTab = 'gex'" 
+                                    :class="{'active': saturationTab === 'gex'}" class="tab-button">
+                                GEX Saturation
+                            </button>
+                            <button @click="saturationTab = 'guide'" 
+                                    :class="{'active': saturationTab === 'guide'}" class="tab-button">
+                                Guide Saturation
+                            </button>
+                        </div>
+                        
+                        <div class="tab-content">
+                            <div x-show="saturationTab === 'gex'" class="image-gallery">
+                                <template x-for="plot in filteredPlotsForType('umi_saturation')" :key="plot.path">
+                                    <div class="image-card">
+                                        <a :href="plot.path" data-lightbox="gallery">
+                                            <img :src="plot.path" :alt="plot.title">
+                                        </a>
+                                        <div class="image-card-title" x-text="plot.title"></div>
+                                    </div>
+                                </template>
+                            </div>
+                            
+                            <div x-show="saturationTab === 'guide'" class="image-gallery">
+                                <template x-for="plot in filteredPlotsForType('guide_umi_saturation')" :key="plot.path">
+                                    <div class="image-card">
+                                        <a :href="plot.path" data-lightbox="gallery">
+                                            <img :src="plot.path" :alt="plot.title">
+                                        </a>
+                                        <div class="image-card-title" x-text="plot.title"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Per-Cell QC Section -->
+                <div x-show="currentView === 'per-cell-qc'" class="content-section">
+                    <h1>Per-Cell QC Metrics</h1>
+                    <p>Distribution of QC metrics across cells within each sample.</p>
+                    
+                    <template x-for="[metric, title] in Object.entries(metricTypes)" :key="metric">
+                        <div x-show="filteredPlotsForMetric(metric).length > 0">
+                            <h2 x-text="title"></h2>
+                            <div class="image-gallery">
+                                <template x-for="plot in filteredPlotsForMetric(metric)" :key="plot.path">
+                                    <div class="image-card">
+                                        <a :href="plot.path" data-lightbox="gallery">
+                                            <img :src="plot.path" :alt="plot.title">
+                                        </a>
+                                        <div class="image-card-title" x-text="plot.title"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                
+                <!-- Compare Samples Section (NEW) -->
+                <div x-show="currentView === 'compare-samples'" class="content-section">
+                    <h1>Compare Samples</h1>
+                    <p>View the same metric across all samples for easy comparison.</p>
+                    
+                    <!-- View mode toggle -->
+                    <div class="view-controls">
+                        <label>Group by:</label>
+                        <button @click="compareMode = 'metric'" 
+                                :class="{'active': compareMode === 'metric'}" class="btn btn-sm">
+                            Metric
+                        </button>
+                        <button @click="compareMode = 'method'" 
+                                :class="{'active': compareMode === 'method'}" class="btn btn-sm">
+                            Method
+                        </button>
+                    </div>
+                    
+                    <div x-show="compareMode === 'metric'">
+                        <template x-for="[metric, title] in Object.entries(metricTypes)" :key="metric">
+                            <div x-show="plotsGroupedByMetric[metric] && plotsGroupedByMetric[metric].length > 0" class="metric-comparison">
+                                <h2 x-text="title"></h2>
+                                
+                                <!-- Method selector for this metric -->
+                                <div class="method-selector" x-data="{selectedMethod: ''}">
+                                    <label>Method:</label>
+                                    <select x-model="selectedMethod" class="form-control-sm">
+                                        <option value="">All Methods</option>
+                                        <template x-for="method in getMethodsForMetric(metric)" :key="method">
+                                            <option :value="method" x-text="method"></option>
+                                        </template>
+                                    </select>
+                                    
+                                    <div class="comparison-grid">
+                                        <template x-for="plot in filterPlotsByMethod(plotsGroupedByMetric[metric], selectedMethod)" :key="plot.path">
+                                            <div class="comparison-card">
+                                                <div class="comparison-label" x-text="plot.sample"></div>
+                                                <a :href="plot.path" data-lightbox="gallery">
+                                                    <img :src="plot.path" :alt="plot.title" class="comparison-image">
+                                                </a>
+                                                <div class="comparison-info">
+                                                    <span x-text="plot.method"></span> • 
+                                                    <span x-text="plot.source"></span> • 
+                                                    <span x-text="plot.processing"></span>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    
+                    <div x-show="compareMode === 'method'">
+                        <template x-for="method in availableMethods" :key="method">
+                            <div x-show="plotsGroupedByMethod[method] && plotsGroupedByMethod[method].length > 0" class="method-comparison">
+                                <h2 x-text="method"></h2>
+                                
+                                <template x-for="[metric, plots] in Object.entries(groupByMetric(plotsGroupedByMethod[method]))" :key="metric">
+                                    <div x-show="plots.length > 0">
+                                        <h3 x-text="metricTypes[metric] || metric"></h3>
+                                        <div class="comparison-grid">
+                                            <template x-for="plot in plots" :key="plot.path">
+                                                <div class="comparison-card">
+                                                    <div class="comparison-label" x-text="plot.sample"></div>
+                                                    <a :href="plot.path" data-lightbox="gallery">
+                                                        <img :src="plot.path" :alt="plot.title" class="comparison-image">
+                                                    </a>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                
+                <!-- Consolidated Section -->
+                <div x-show="currentView === 'consolidated'" class="content-section">
+                    <h1>Consolidated QC Metrics</h1>
+                    <p>Aggregated metrics across all samples, biological conditions, and wells.</p>
+                    
+                    <div class="image-gallery">
+                        <template x-for="plot in filteredPlotsForType('consolidated')" :key="plot.path">
+                            <div class="image-card">
+                                <a :href="plot.path" data-lightbox="gallery">
+                                    <img :src="plot.path" :alt="plot.title">
+                                </a>
+                                <div class="image-card-title" x-text="plot.title"></div>
+                            </div>
+                        </template>
+                    </div>
+                    
+                    <h2>Consolidated Tables</h2>
+                    <div id="consolidated-tables"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <!-- External Dependencies -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lightbox2/2.11.4/js/lightbox.min.js"></script>
+    
+    <!-- Alpine.js Application -->
+    <script src="js/qc_explorer.js"></script>
+</body>
+</html>
