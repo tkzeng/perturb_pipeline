@@ -337,8 +337,8 @@ def main():
     parser.add_argument('r1', help='R1 FASTQ.gz file')
     parser.add_argument('r2', help='R2 FASTQ.gz file')
     parser.add_argument('output_prefix', help='Output prefix for recovered R1/R2 files')
-    parser.add_argument('--barcode-file', default='../references/barcodes.96.txt', 
-                        help='Barcode whitelist file (default: ../references/barcodes.96.txt)')
+    parser.add_argument('--barcode-file', required=True,
+                        help='Barcode whitelist file')
     parser.add_argument('--max-reads', type=int, help='Maximum number of reads to process')
     parser.add_argument('--max-shift', type=int, default=4, 
                         help='Maximum shift to search (default: 4)')

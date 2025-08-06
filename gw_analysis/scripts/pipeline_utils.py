@@ -22,17 +22,19 @@ import gffutils
 import gc
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import *
+from scripts.config import *
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+# Configure logging only when needed, not at import time
 logger = logging.getLogger(__name__)
+
+def _configure_logging():
+    """Configure logging only when explicitly needed."""
+    if not logger.handlers:  # Only configure if not already configured
+        handler = logging.StreamHandler(sys.stderr)  # Use stderr instead of stdout
+        handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
 
 # GPU imports - only loaded if needed
 try:
@@ -53,9 +55,10 @@ except ImportError:
 
 def log_print(*args, **kwargs):
     """Log message with INFO level and immediate flush."""
+    _configure_logging()  # Ensure logging is configured
     message = " ".join(str(arg) for arg in args)
     logger.info(message)
-    sys.stdout.flush()
+    sys.stderr.flush()  # Flush stderr since we're logging there now
 
 
 def align_datasets_by_cells(adata1, adata2, name1="dataset1", name2="dataset2"):
@@ -92,49 +95,49 @@ def align_datasets_by_cells(adata1, adata2, name1="dataset1", name2="dataset2"):
 # =============================================================================
 
 
-def get_sample_pool_and_mapping(sample_id, sample_info_file="../references/sample_info.xlsx"):
+def get_sample_pool_and_mapping(sample_id, sample_info_file):
     """Get pool and sample-to-well mapping for a specific sample from sample_info.xlsx
-    
+
     Args:
         sample_id: Sample ID to look up (e.g., "pool1:gex_1")
         sample_info_file: Path to sample_info.xlsx
-        
+
     Returns:
         tuple: (pool_name, sample_to_well_mapping_name)
     """
     sample_df = pd.read_excel(sample_info_file)
     sample_row = sample_df[sample_df['sample_id'] == sample_id]
-    
+
     if sample_row.empty:
         raise ValueError(f"Sample {sample_id} not found in {sample_info_file}")
-    
+
     # Pool is already in the dataframe, no need to extract from sample_id
     pool_name = sample_row.iloc[0]['pool']
     mapping_name = sample_row.iloc[0]['sample_to_well_mapping']
-    
+
     return pool_name, mapping_name
 
 
 def load_sample_info(sample_info_file="sample_info.xlsx"):
     """Load and validate sample info with guide-GEX pairings.
-    
+
     Args:
         sample_info_file: Path to sample_info.xlsx
-        
+
     Returns:
         pd.DataFrame: Sample info dataframe with validated columns
     """
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
-    
+
     df = pd.read_excel(sample_info_file)
-    
+
     # Validate required columns exist
     required_cols = ['sample_id', 'sample_type', 'pool']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"Required columns missing from sample info: {missing_cols}")
-    
+
     # Check if pairing columns exist (they're optional but if one exists, both should)
     pairing_cols = ['paired_guide_sample_id', 'paired_guide_pool']
     has_pairing = any(col in df.columns for col in pairing_cols)
@@ -142,82 +145,82 @@ def load_sample_info(sample_info_file="sample_info.xlsx"):
         missing_pairing = [col for col in pairing_cols if col not in df.columns]
         if missing_pairing:
             log_print(f"⚠️  Warning: Incomplete pairing columns. Missing: {missing_pairing}")
-    
+
     return df
 
 
 def get_guide_gex_pairings(sample_info_file="sample_info.xlsx"):
     """Get guide-to-GEX and GEX-to-guide mappings from sample sheet.
-    
+
     Uses paired_guide_sample_id column for explicit pairing.
     Since sample_ids now include pool prefix (e.g., "pool1:gex_1"), they are globally unique.
-    
+
     Args:
         sample_info_file: Path to sample_info.xlsx
-        
+
     Returns:
         tuple: (guide_to_gex dict, gex_to_guide dict)
     """
     df = load_sample_info(sample_info_file)
     guide_to_gex = {}
     gex_to_guide = {}
-    
+
     # Check if pairing column exists
     if 'paired_guide_sample_id' not in df.columns:
         raise ValueError(
             "CRITICAL: 'paired_guide_sample_id' column is REQUIRED in sample_info.xlsx for guide-GEX pairing."
         )
-    
+
     log_print("Building guide-GEX pairings from sample sheet")
-    
+
     # Build mappings from paired_guide column
     for _, row in df.iterrows():
         if row['sample_type'] == 'gex' and pd.notna(row.get('paired_guide_sample_id')):
             gex_id = row['sample_id']  # e.g., "pool1:gex_1"
             guide_id = row['paired_guide_sample_id']  # e.g., "pool1:guide_1"
-            
+
             # Validate guide exists
             guide_rows = df[df['sample_id'] == guide_id]
             if guide_rows.empty:
                 raise ValueError(f"Paired guide {guide_id} not found for GEX sample {gex_id}")
-            
+
             if guide_rows.iloc[0]['sample_type'] != 'guide':
                 raise ValueError(f"Paired sample {guide_id} is not a guide sample (type: {guide_rows.iloc[0]['sample_type']})")
-            
+
             # Simple mapping since sample_ids are now unique
             guide_to_gex[guide_id] = gex_id
             gex_to_guide[gex_id] = guide_id
-    
+
     # Validate all guides have pairings
     all_guides = df[df['sample_type'] == 'guide']['sample_id'].tolist()
     unpaired_guides = [g for g in all_guides if g not in guide_to_gex]
     if unpaired_guides:
         raise ValueError(f"CRITICAL: Found unpaired guide samples: {unpaired_guides}. All guides must have paired GEX samples.")
-    
+
     # Validate all GEX samples have pairings
     all_gex = df[df['sample_type'] == 'gex']['sample_id'].tolist()
     unpaired_gex = [g for g in all_gex if g not in gex_to_guide]
     if unpaired_gex:
         raise ValueError(f"CRITICAL: Found unpaired GEX samples: {unpaired_gex}. All GEX samples must have paired guide samples.")
-    
+
     log_print(f"✅ Validated {len(gex_to_guide)} GEX-guide pairs")
-    
+
     return guide_to_gex, gex_to_guide
 
 
 def get_paired_sample(sample_id, sample_type, sample_info_file="sample_info.xlsx"):
     """Get the paired sample for a given sample.
-    
+
     Args:
         sample_id: Sample to find pair for
         sample_type: 'gex' or 'guide' (type of the input sample)
         sample_info_file: Path to sample_info.xlsx
-        
+
     Returns:
         str: Paired sample ID
     """
     guide_to_gex, gex_to_guide = get_guide_gex_pairings(sample_info_file)
-    
+
     if sample_type == 'guide':
         if sample_id not in guide_to_gex:
             raise ValueError(f"No paired GEX sample found for guide {sample_id}")
@@ -309,7 +312,7 @@ def process_single_library(lib_name, nascent=False):
 
     # Standardize cell indices using consistent prefix-stripping logic (same as guide processing)
     adata.obs["barcode"] = adata.obs.index.map(lambda x: x.split("_")[-1])
-    
+
     # Apply same standardization logic as guide processing
     if lib_name.startswith('gex_'):
         standardized_lib_id = lib_name[4:]  # Remove 'gex_' prefix
@@ -317,7 +320,7 @@ def process_single_library(lib_name, nascent=False):
         standardized_lib_id = lib_name[3:]  # Remove 'gex' prefix
     else:
         raise ValueError(f"Invalid library name format: {lib_name}. Expected to start with 'gex_' or 'gex'")
-    
+
     adata.obs["standardized_lib_id"] = standardized_lib_id
     adata.obs.index = adata.obs["standardized_lib_id"] + "_" + adata.obs["barcode"]
     adata.obs = adata.obs.drop(columns="barcode")
@@ -329,7 +332,7 @@ def process_single_library(lib_name, nascent=False):
         log_print(f"  🗺️ Applying well-based filtering using plate {mapping_name}...")
         map_cells_to_samples_with_plate(adata, mapping_name)
         add_sample_annotations(adata)
-        
+
         # Log biological sample distribution
         if 'biological_sample' in adata.obs.columns:
             sample_counts = adata.obs['biological_sample'].value_counts()
@@ -559,11 +562,11 @@ def extract_and_validate_barcodes(adata):
         raise RuntimeError("CRITICAL: Could not load Round1 barcode files for validation")
 
 
-def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file="../references/plate_maps.xlsx"):
+def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file):
     """Map cells to biological samples using barcode mappings and plate maps."""
     log_print(f"🗺️ Mapping cells to biological samples using plate {plate_name}...")
 
-    # Load barcode files  
+    # Load barcode files
     from config import load_barcode_files, create_well_to_sample_mapping_from_plates
     barcodes_96, barcodes_48 = load_barcode_files()
 
@@ -580,10 +583,10 @@ def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file="../refer
     # For now, assume 96-well format (can be made configurable later)
     # Map barcodes to wells
     adata.obs["well"] = adata.obs["round1"].map(barcodes_96_dict)
-    
+
     # Map wells to biological samples
     adata.obs["biological_sample"] = adata.obs["well"].map(well_to_sample)
-    
+
     # Add all metadata columns from plate maps
     for _, row_idx in adata.obs.iterrows():
         well = row_idx.get("well")
@@ -600,7 +603,7 @@ def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file="../refer
 
     if len(unmapped_wells) > 0:
         raise ValueError(f"Failed to map {len(unmapped_wells)} cells to wells")
-        
+
     if len(unmapped_samples) > 0:
         raise ValueError(f"Failed to map {len(unmapped_samples)} cells to biological samples")
 
@@ -637,7 +640,7 @@ def add_mitochondrial_metrics(adata):
         raise RuntimeError(
             "CRITICAL: Gene symbols required for mitochondrial gene detection. Run gene annotation first."
         )
-    
+
     mt_genes = adata.var['gene'].str.startswith("MT-", na=False)
     log_print(f"📊 Using gene symbols: found {mt_genes.sum()} MT genes")
 
@@ -662,9 +665,9 @@ def apply_cell_filters(adata):
 
     initial_cells = adata.shape[0]
 
-    # Apply filters from config 
+    # Apply filters from config
     thresholds = CELL_FILTER_THRESHOLDS
-    
+
     if "max_total_counts" in thresholds:
         adata = adata[adata.obs["total_counts"] < thresholds["max_total_counts"]]
     if "max_mt_percent" in thresholds and "pct_counts_mt" in adata.obs.columns:
@@ -847,7 +850,7 @@ def add_comprehensive_gene_annotations(adata):
 
 def _score_gene_list(adata_main, gene_list, score_name, use_gpu=False):
     """Score a gene list on normalized, log-transformed counts (no scaling needed).
-    
+
     Note: Scaling is NOT needed for gene scoring as recommended in:
     https://satijalab.org/seurat/articles/cell_cycle_vignette
     Gene scoring should be performed on normalized, log-transformed counts.
@@ -876,7 +879,7 @@ def _score_gene_list(adata_main, gene_list, score_name, use_gpu=False):
 
 def filter_guides_by_reference(adata):
     """Filter guide data by reference guide list.
-    
+
     This is a placeholder for future implementation when guide processing
     is needed in the main pipeline.
     """
@@ -885,11 +888,11 @@ def filter_guides_by_reference(adata):
 
 def calculate_guides_per_cell(guide_counts, cutoff):
     """Calculate guides per cell at a given cutoff.
-    
+
     Args:
         guide_counts: Sparse matrix of guide counts (cells x guides)
         cutoff: Minimum count threshold for guide detection
-    
+
     Returns:
         numpy array of guides per cell
     """
@@ -899,16 +902,16 @@ def calculate_guides_per_cell(guide_counts, cutoff):
 
 def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs, guide_to_genes=None):
     """Calculate guide metrics for a specific set of cells, including those with no guides.
-    
+
     CRITICAL: This function includes ALL provided cells in calculations, even if they
     don't exist in the guide data. Missing cells contribute 0 UMIs to averages.
-    
+
     Args:
         guide_adata: Guide count AnnData object (any subset)
         cell_barcodes: List/array of cell barcodes to calculate metrics for
         guide_cutoffs: List of UMI cutoffs for guide detection
         guide_to_genes: Optional dict mapping guide IDs to gene lists
-        
+
     Returns:
         dict: Metrics including:
             - n_cells_total: Total cells provided
@@ -919,72 +922,77 @@ def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs,
                 - fraction_cells_with_guides_cutoff{N}: Fraction with ≥1 guide
                 - umis_per_guide_per_cell_cutoff{N}: Mean UMIs per guide (cells with guides only)
                 - total_guides_detected_cutoff{N}: Unique guides across all cells
+                - total_guide_detections_cutoff{N}: Total guide detections across all cells (sum)
                 - total_targeted_genes_cutoff{N}: Unique genes targeted (if guide_to_genes provided)
     """
     metrics = {}
     n_cells_total = len(cell_barcodes)
     metrics['n_cells_total'] = n_cells_total
-    
+
     if n_cells_total == 0:
         raise ValueError("No cell barcodes provided")
-    
+
     # Find which cells exist in guide data using vectorized operations
     barcode_series = pd.Series(range(guide_adata.n_obs), index=guide_adata.obs_names)
     cell_indices_series = barcode_series.reindex(cell_barcodes)
-    
+
     # Separate found and missing cells
     found_mask = ~cell_indices_series.isna()
     n_cells_found = found_mask.sum()
     metrics['n_cells_in_guide_data'] = int(n_cells_found)
-    
+
     log_print(f"Found {n_cells_found:,} of {n_cells_total:,} cells in guide data ({n_cells_found/n_cells_total*100:.1f}%)")
-    
+
     # Initialize arrays for ALL cells (including missing ones)
     all_umis_per_cell = np.zeros(n_cells_total)
-    
+
     # If we have cells in guide data, get their counts
     if n_cells_found > 0:
         cell_indices = cell_indices_series.dropna().astype(int).values
         guide_counts_found = guide_adata.X[cell_indices]
-        
+
         # Calculate UMIs for found cells
         umis_per_found_cell = np.array(guide_counts_found.sum(axis=1)).flatten()
-        
+
         # Place these values in the correct positions in the full array
         all_umis_per_cell[found_mask] = umis_per_found_cell
-        
+
         # Store guide counts for cutoff calculations
         guide_counts_sparse = scipy.sparse.csr_matrix(guide_counts_found)
     else:
         guide_counts_sparse = None
-    
+
     # Calculate mean UMIs per cell (including cells with 0)
     metrics['guide_umis_per_cell'] = float(np.mean(all_umis_per_cell))
-    
+
     # Calculate metrics for each cutoff
     for cutoff in guide_cutoffs:
         # Initialize arrays for ALL cells
         all_guides_per_cell = np.zeros(n_cells_total)
-        
+
         if n_cells_found > 0 and guide_counts_sparse is not None:
             # Calculate guides per cell for found cells
             guides_per_found_cell = calculate_guides_per_cell(guide_counts_sparse, cutoff)
             all_guides_per_cell[found_mask] = guides_per_found_cell
-            
+
             # Binary guide matrix for diversity calculations
             binary_guides = (guide_counts_sparse >= cutoff).astype(int)
             guides_detected = np.array(binary_guides.sum(axis=0)).flatten() > 0
             n_guides_detected = int(np.sum(guides_detected))
+            
+            # Total guide detections across all cells (sum of binary matrix)
+            total_guide_detections = int(binary_guides.sum())
         else:
             n_guides_detected = 0
-        
+            total_guide_detections = 0
+
         # Mean guides per cell (including cells with 0)
         metrics[f'guides_per_cell_cutoff{cutoff}'] = float(np.mean(all_guides_per_cell))
-        
+
         # Fraction of cells with guides (out of ALL cells)
         cells_with_guides = all_guides_per_cell > 0
         metrics[f'fraction_cells_with_guides_cutoff{cutoff}'] = float(np.sum(cells_with_guides) / n_cells_total)
-        
+
         # UMIs per guide per cell (only for cells with guides)
         if np.any(cells_with_guides):
             # Get guide counts for cells with guides
@@ -993,23 +1001,26 @@ def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs,
                 # Map back to guide data indices
                 guide_data_indices = cell_indices_series.iloc[cells_with_guides_indices].astype(int).values
                 guide_counts_subset = guide_adata.X[guide_data_indices]
-                
+
                 # Only count UMIs from guides above cutoff
                 binary_subset = (guide_counts_subset >= cutoff)
                 filtered_counts = guide_counts_subset.multiply(binary_subset)
                 umis_per_cell_with_guides = np.array(filtered_counts.sum(axis=1)).flatten()
                 guides_per_cell_with_guides = all_guides_per_cell[cells_with_guides]
-                
+
                 umis_per_guide = umis_per_cell_with_guides / guides_per_cell_with_guides
                 metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = float(np.mean(umis_per_guide))
             else:
                 metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = np.nan
         else:
             metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = np.nan
-        
+
         # Total guides detected
         metrics[f'total_guides_detected_cutoff{cutoff}'] = n_guides_detected
         
+        # Total guide detections across all cells
+        metrics[f'total_guide_detections_cutoff{cutoff}'] = total_guide_detections
+
         # Gene-level metrics if mapping provided
         if guide_to_genes is not None and n_cells_found > 0:
             if 'guide_names' not in guide_adata.uns:
@@ -1024,7 +1035,7 @@ def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs,
                 metrics[f'total_targeted_genes_cutoff{cutoff}'] = len(unique_genes)
         else:
             metrics[f'total_targeted_genes_cutoff{cutoff}'] = 0
-    
+
     return metrics
 
 
@@ -1035,7 +1046,7 @@ def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs,
 
 def normalize_and_preprocess(adata, use_gpu=False):
     """Normalize data and create HVG subset for analysis.
-    
+
     Correct order: Raw UMIs -> Filter expressed genes (>0.1% cells) -> HVG detection (seurat_v3 on raw) -> Normalize -> Log1p -> Subset to HVG
     """
     log_print("🔄 Normalizing and preprocessing data...")
@@ -1047,17 +1058,17 @@ def normalize_and_preprocess(adata, use_gpu=False):
     # Check that gene annotations are available
     if "gene_type" not in adata.var.columns:
         raise RuntimeError("CRITICAL: gene_type annotation missing. Run gene annotation before preprocessing.")
-    
+
     # Filter genes expressed in >0.1% of cells AND protein-coding genes only
     # NOTE: Protein-coding filter makes a significant difference in clustering results
     min_cells = max(1, int(len(adata) * 0.001))  # 0.1% of cells
     genes_expressed = (adata.X > 0).sum(axis=0).A1 >= min_cells
     protein_coding = adata.var["gene_type"] == "protein_coding"
     genes_expressed = genes_expressed & protein_coding
-    
+
     log_print(f"🧹 Using {genes_expressed.sum()} protein-coding genes expressed in ≥{min_cells} cells (0.1%)")
     log_print(f"📊 Protein-coding filter removed {(~protein_coding).sum()} non-coding genes")
-    
+
     # Create expressed genes dataset for HVG detection
     adata_expressed = adata[:, genes_expressed].copy()
     log_print(f"📊 Created expressed genes dataset: {adata_expressed.shape}")
@@ -1079,7 +1090,7 @@ def normalize_and_preprocess(adata, use_gpu=False):
             adata.var[col] = 0.0 if adata_expressed.var[col].dtype in ['float64', 'float32'] else False
         adata.var.loc[adata_expressed.var.index, col] = adata_expressed.var[col]
     log_print(f"📊 Normalized expressed genes dataset: {adata_expressed.shape}")
-    
+
     # Then subset to HVG for dimensionality reduction
     adata_hvg = adata_expressed[:, adata_expressed.var.highly_variable].copy()
     log_print(f"📊 Created HVG subset: {adata_hvg.shape}")
@@ -1122,7 +1133,7 @@ def perform_clustering(adata, use_gpu=False, target_clusters=3):
     resolution = 0.05
     max_clusters = 10
     best_resolution = 0.05
-    
+
     while resolution <= 2.0:  # Safety limit
         if use_gpu and GPU_AVAILABLE:
             rsc.tl.leiden(adata, resolution=resolution, key_added=f"leiden_{resolution}")
@@ -1131,19 +1142,19 @@ def perform_clustering(adata, use_gpu=False, target_clusters=3):
 
         n_clusters = len(adata.obs[f"leiden_{resolution}"].unique())
         log_print(f"  Resolution {resolution}: {n_clusters} clusters")
-        
+
         best_resolution = resolution
-        
+
         # Stop if we've reached the maximum number of clusters
         if n_clusters >= max_clusters:
             log_print(f"🎯 Reached {n_clusters} clusters at resolution {resolution}, stopping")
             break
-            
+
         # Increment resolution
         resolution = round(resolution + 0.05, 2)
 
     log_print(f"✅ Clustering complete: resolution {best_resolution} with {len(adata.obs[f'leiden_{best_resolution}'].unique())} clusters")
-    
+
     # Assert that leiden_0.05 gives exactly 2 clusters
     if 'leiden_0.05' in adata.obs.columns:
         n_clusters_0_05 = len(adata.obs['leiden_0.05'].unique())
@@ -1273,9 +1284,9 @@ def cleanup_gpu_memory():
 # =============================================================================
 
 
-def map_cells_to_samples_from_sample_info(adata, sample_info_file="../references/sample_info.xlsx"):
+def map_cells_to_samples_from_sample_info(adata, sample_info_file):
     """Map cells to samples using sample_info.xlsx and sample-to-well mappings.
-    
+
     This is a placeholder for future implementation when you want to add
     sample annotation functionality similar to statin_perturb.
     """

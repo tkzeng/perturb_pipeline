@@ -42,8 +42,12 @@ def load_h5ad_matrix(h5ad_file):
 
 def run_emptydrops_r(kb_dir, sample_id, output_dir, emptydrops_lower=100, ncores=4):
     """Run R script for emptyDrops analysis."""
+    # Get the path to the R script relative to this Python script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    r_script_path = os.path.join(script_dir, "emptydrops_r.R")
+    
     cmd = [
-        "Rscript", "scripts/emptydrops_r.R",
+        "Rscript", r_script_path,
         "--kb_dir", str(kb_dir),
         "--sample_id", sample_id,
         "--output_dir", str(output_dir),

@@ -41,7 +41,7 @@ from pipeline_utils import (
     add_guide_data,
     get_guide_gex_pairings
 )
-from config import REFERENCE_FILES, BARCODE_FILES, CELL_FILTER_THRESHOLDS, get_sample_to_well_mapping_from_plates
+# Removed unused imports from config.py - all configuration comes from config.yaml via Snakemake
 
 
 
@@ -441,7 +441,8 @@ def main():
         else:
             # Map cells to samples based on Parse Bio barcodes
             log_print(f"   Using plate mapping: {plate_name}")
-            map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file="../references/plate_maps.xlsx")
+            plate_maps_file = config['plate_maps_file']
+            map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file=plate_maps_file)
         
         # Process guide assignments (currently a stub function)
         # filter_guides_by_reference(adata)  # Skip - not needed for this pipeline

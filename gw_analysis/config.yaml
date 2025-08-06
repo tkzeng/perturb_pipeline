@@ -3,6 +3,7 @@
 # Sample information file
 sample_info_file: "../references/sample_info.xlsx"
 sample_info_tab: "sample_info"  # Specify which tab/sheet to read from the Excel file
+plate_maps_file: "../references/plate_maps.xlsx"  # Plate well-to-sample mappings
 
 # Sample IDs - will be automatically discovered from sample_info.xlsx
 # Leave empty to process all samples, or specify specific samples
@@ -10,10 +11,43 @@ sample_info_tab: "sample_info"  # Specify which tab/sheet to read from the Excel
 #sample_ids: ["gex_batch_1", "gex_batch_2", "gex_batch_3", "guide_batch_1", "guide_batch_2", "guide_batch_3"]
 sample_ids: []
 
-# File paths
+# User-specified input paths (must exist before running pipeline)
+input_paths:
+  # Reference files
+  replace_file: "../references/replace.96.txt"
+  barcodes_file: "../references/barcodes.96.txt"
+  sample_info_file: "../references/sample_info.xlsx"
+  primer_info_file: "../references/split_lp_primer.xlsx"
+  guide_reference: "../references/all_guides.20240917.tsv"
+  
+  # Reference genome/index locations
+  reference_base: "../references"
+  nascent_genome: "nascent_all"  # Subdirectory with genome index files
+  
+  # Base directory for raw sequencing data
+  raw_data_base: "../data"
+  # Pattern for raw data subdirectories ({pool} will be replaced)
+  raw_data_pattern: "May2025_GW_{pool}"
+
+# Pipeline-created output paths
+output_paths:
+  # Subdirectories under $SCRATCH environment variable
+  # If $SCRATCH is not set, will use /tmp as fallback
+  scratch_subdir: "gw_analysis"  # Main working directory under $SCRATCH
+  temp_subdir: "gw_analysis_tmp"  # Temp directory under $SCRATCH
+  
+  # Local outputs (relative to working directory)
+  results_base: "../analysis_results"
+  logs_base: "../analysis_logs"
+
+# Legacy paths section for backwards compatibility
+# Will be deprecated - use input_paths instead
 paths:
   replace_file: "../references/replace.96.txt"
   barcodes_file: "../references/barcodes.96.txt"
+
+# Guide library configuration
+guide_set: "250313_ucsf_guides"  # Name of the guides file in ../references/guides/ (without .txt extension)
 
 # Analysis parameters
 analysis:
@@ -21,10 +55,10 @@ analysis:
   index_prefix: "nascent"
   threads: 24
   kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
-  strand: "unstranded"
+  strand: "stranded"
   # Source/processing combinations for pipeline outputs
   combinations:
-    - ["main", "raw"]
+      #- ["main", "raw"]
     - ["all", "merged"]
   
 # Cell calling parameters
