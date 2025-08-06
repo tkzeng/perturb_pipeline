@@ -241,6 +241,7 @@ def calculate_guide_metrics_for_barcodes(adata, barcode_set, guide_to_genes=None
         metrics[f'fraction_cells_with_guides_cutoff{cutoff}'] = unified_metrics[f'fraction_cells_with_guides_cutoff{cutoff}']
         metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = unified_metrics[f'umis_per_guide_per_cell_cutoff{cutoff}']
         metrics[f'total_guides_detected_cutoff{cutoff}'] = unified_metrics[f'total_guides_detected_cutoff{cutoff}']
+        metrics[f'total_guide_detections_cutoff{cutoff}'] = unified_metrics[f'total_guide_detections_cutoff{cutoff}']
         metrics[f'total_targeted_genes_cutoff{cutoff}'] = unified_metrics[f'total_targeted_genes_cutoff{cutoff}']
     
     return metrics
@@ -364,6 +365,7 @@ def calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, g
             
             # Guide diversity
             results[f'total_guides_detected_cutoff{cutoff}_{method}'] = guide_metrics[f'total_guides_detected_cutoff{cutoff}']
+            results[f'total_guide_detections_cutoff{cutoff}_{method}'] = guide_metrics[f'total_guide_detections_cutoff{cutoff}']
             results[f'total_targeted_genes_cutoff{cutoff}_{method}'] = guide_metrics[f'total_targeted_genes_cutoff{cutoff}']
     
     return results

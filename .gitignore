@@ -3,6 +3,7 @@ analysis_logs/
 analysis_results/
 data/
 misc/
+references/
 gw_analysis/statin_perturb/
 gw_analysis/scripts/UNUSED/
 gw_analysis/misc/
@@ -11,12 +12,8 @@ gw_analysis/.snakemake/
 # External software/repos
 gw_analysis/bustools/
 gw_analysis/kb_python/
-references/ParseBiosciences-Pipeline.1.2.1/
-references/kite/
-references/nascent_all/
 
 # Specific large files
-references/gencode.v46.annotation.db
 find_large_files.sh
 gw_analysis/CLAUDE.md
 

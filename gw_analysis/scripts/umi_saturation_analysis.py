@@ -202,7 +202,7 @@ def calculate_umi_stats(adata, cell_barcodes_dict=None, is_guide=False, guide_cu
     return stats
 
 
-def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_dict, source, processing, is_guide=False, guide_cutoffs=None):
+def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_dict, source, processing, scratch_dir, is_guide=False, guide_cutoffs=None):
     """Run UMI saturation analysis by loading pre-generated subsampled matrices."""
     saturation_data = []
     
@@ -214,9 +214,9 @@ def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_
             # Use existing full matrix (unfiltered)
             try:
                 if is_guide:
-                    kb_result_dir = Path(f"/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_guide_{source}_{processing}")
+                    kb_result_dir = Path(f"{scratch_dir}/{sample_id}/kb_guide_{source}_{processing}")
                 else:
-                    kb_result_dir = Path(f"/scratch/users/tkzeng/gw_analysis/{sample_id}/kb_all_{source}_{processing}")
+                    kb_result_dir = Path(f"{scratch_dir}/{sample_id}/kb_all_{source}_{processing}")
                 
                 adata = load_adata_all_barcodes(kb_result_dir, is_guide)
                 print(f"  Using existing full matrix from {kb_result_dir}")
@@ -225,16 +225,14 @@ def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_
         else:
             # Load pre-generated subsampled matrix (unfiltered)
             try:
+                # Temp is always under scratch/tmp
                 if is_guide:
-                    scratch_dir = f"$SCRATCH/tmp/umi_sat_{sample_id}-{fraction}/kb_guide"
+                    subsample_dir = f"{scratch_dir}/tmp/umi_sat_{sample_id}-{fraction}/kb_guide"
                 else:
-                    scratch_dir = f"$SCRATCH/tmp/umi_sat_{sample_id}-{fraction}/kb_all"
+                    subsample_dir = f"{scratch_dir}/tmp/umi_sat_{sample_id}-{fraction}/kb_all"
                 
-                # Expand environment variables
-                scratch_dir_expanded = os.path.expandvars(scratch_dir)
-                
-                adata = load_adata_all_barcodes(Path(scratch_dir_expanded), is_guide)
-                print(f"  Loaded subsampled matrix from {scratch_dir_expanded}")
+                adata = load_adata_all_barcodes(Path(subsample_dir), is_guide)
+                print(f"  Loaded subsampled matrix from {subsample_dir}")
             except Exception as e:
                 raise RuntimeError(f"Failed to load subsampled matrix for fraction {fraction}: {e}. Make sure Snakemake has generated the subsampled data.") from e
         
@@ -724,6 +722,7 @@ def main():
                         help="Data source (main, undetermined, or all)")
     parser.add_argument("--processing", required=True, choices=["raw", "trimmed", "recovered", "merged"],
                         help="Processing state (raw, trimmed, recovered, or merged)")
+    parser.add_argument("--scratch-dir", required=True, help="Scratch directory base path")
     
     args = parser.parse_args()
     
@@ -786,7 +785,8 @@ def main():
     
     # Run saturation analysis with cell-specific metrics
     saturation_data = run_saturation_analysis(
-        config, args.sample_id, saturation_points, cell_barcodes_dict, args.source, args.processing, is_guide, guide_cutoffs
+        config, args.sample_id, saturation_points, cell_barcodes_dict, args.source, args.processing, 
+        args.scratch_dir, is_guide, guide_cutoffs
     )
     
     if saturation_data:

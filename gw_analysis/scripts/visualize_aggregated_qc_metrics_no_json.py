@@ -272,6 +272,7 @@ def process_metric(args_tuple):
         'fraction_cells_with_guides_cutoff',
         'umis_per_guide_per_cell_cutoff',
         'total_guides_detected_cutoff',
+        'total_guide_detections_cutoff',
         'total_targeted_genes_cutoff',
     ]
     

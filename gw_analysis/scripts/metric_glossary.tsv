@@ -34,6 +34,7 @@ reads_per_umi	Total reads / total UMIs in unfiltered count matrix
 reads_per_umi_in_cells	Total reads / total UMIs in called cells
 reads_with_correctable_barcodes	Number of reads that mapped with valid/correctable barcodes
 total_guides_detected_cutoff{N}	Number of unique guides detected across all cells above cutoff N
+total_guide_detections_cutoff{N}	Total number of guide detections across all cells above cutoff N (counting each guide-cell pair)
 total_reads	Total number of demultiplexed reads for this sample
 total_reads_per_cell	Average reads per cell (total reads / n_cells)
 total_targeted_genes_cutoff{N}	Number of unique genes targeted by detected guides above cutoff N
