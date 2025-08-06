@@ -171,7 +171,7 @@ def calculate_statistics(kb_dir, sample_id=None, config_file=None, cell_barcodes
             config = yaml.safe_load(f)
         
         # Load sample info
-        sample_info_file = config.get('sample_info_file', 'sample_info.xlsx')
+        sample_info_file = config['sample_info_file']
         if not os.path.exists(sample_info_file):
             raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
             
@@ -192,7 +192,7 @@ def calculate_statistics(kb_dir, sample_id=None, config_file=None, cell_barcodes
             min_umi_threshold = row.get('min_umi_threshold', 'N/A')
         else:
             # Fall back to config default
-            min_umi_threshold = config.get('cell_calling', {}).get('min_umi_threshold', 500)
+            min_umi_threshold = config['cell_calling']['min_umi_threshold']
     
     # Create results dictionary
     results = {

@@ -9,8 +9,8 @@ import pandas as pd
 import sys
 
 # Hardcoded paths for this simple utility script
-input_file = "../references/guides/all_guides_duplicates_filtered.k562_yann.txt"
-output_file = "../references/guides/k562_yann_guides_formatted.txt"
+input_file = "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/all_guides_duplicates_filtered.k562_yann.txt"
+output_file = "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/k562_yann_guides_qc_reference.txt"
 
 # Read with header
 df = pd.read_csv(input_file, sep='\t')

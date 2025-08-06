@@ -28,7 +28,7 @@ from scripts.pipeline_utils import calculate_guides_per_cell, get_paired_sample,
 
 def get_sample_pool_from_id(config, sample_id):
     """Get the pool name for a sample ID."""
-    sample_info_file = config.get('sample_info_file', 'sample_info.xlsx')
+    sample_info_file = config['sample_info_file']
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
@@ -696,7 +696,7 @@ def load_cell_calling_results(cell_calling_dir, sample_id):
 
 def determine_sample_type(config, sample_id):
     """Determine if a sample is GEX or guide library."""
-    sample_info_file = config.get('sample_info_file', 'sample_info.xlsx')
+    sample_info_file = config['sample_info_file']
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
@@ -754,7 +754,7 @@ def main():
     # Handle guide vs GEX samples differently
     if is_guide:
         # For guide samples, get cell barcodes from paired GEX sample
-        paired_gex_sample = get_paired_sample(args.sample_id, 'guide', config.get('sample_info_file', 'sample_info.xlsx'))
+        paired_gex_sample = get_paired_sample(args.sample_id, 'guide', config['sample_info_file'])
         print(f"Found paired GEX sample: {paired_gex_sample}")
         
         # Load cell calling results from paired GEX sample
@@ -770,7 +770,7 @@ def main():
         cell_calling_results, cell_barcodes_dict = load_cell_calling_results(args.cell_calling_dir, args.sample_id)
     
     # Get saturation points from config
-    saturation_points = config.get('cell_calling', {}).get('defaults', {}).get('saturation_points', [0.1, 0.25, 0.5, 0.75, 1.0])
+    saturation_points = config['cell_calling']['defaults']['saturation_points']
     print(f"Saturation points: {saturation_points}")
     
     print(f"Found cell calling methods: {list(cell_barcodes_dict.keys())}")
@@ -780,7 +780,7 @@ def main():
     # Get guide cutoffs from config if this is a guide sample
     guide_cutoffs = None
     if is_guide:
-        guide_cutoffs = config.get('qc_analysis', {}).get('guide_cutoffs', [1, 2, 3, 4, 5])
+        guide_cutoffs = config['qc_analysis']['guide_cutoffs']
         print(f"Using guide cutoffs: {guide_cutoffs}")
     
     # Run saturation analysis with cell-specific metrics

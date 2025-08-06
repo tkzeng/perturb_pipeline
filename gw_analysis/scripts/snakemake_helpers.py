@@ -15,13 +15,13 @@ import subprocess
 # =============================================================================
 
 def get_scratch_path(*parts, config=None):
-    """Build scratch directory paths using $SCRATCH environment variable"""
-    SCRATCH_BASE = os.environ.get('SCRATCH', '/tmp')
-    scratch_subdir = 'gw_analysis'
-    if config:
-        scratch_subdir = config.get('output_paths', {}).get('scratch_subdir', 'gw_analysis')
+    """Build scratch directory paths using $SCRATCH environment variable and analysis_name"""
+    SCRATCH_BASE = os.environ['SCRATCH']
+    if not config:
+        raise ValueError("config is required for get_scratch_path")
+    analysis_name = config['analysis_name']
     
-    scratch_dir = os.path.join(SCRATCH_BASE, scratch_subdir)
+    scratch_dir = os.path.join(SCRATCH_BASE, analysis_name)
     if parts and parts[0]:  # Only join if parts are provided and not empty
         path_parts = [str(p) for p in parts]
         return os.path.join(scratch_dir, *path_parts)
@@ -31,9 +31,9 @@ def get_scratch_path(*parts, config=None):
 
 def get_results_path(*parts, config=None):
     """Build results directory paths"""
-    results_base = '../analysis_results'
-    if config:
-        results_base = config.get('output_paths', {}).get('results_base', '../analysis_results')
+    if not config:
+        raise ValueError("config is required for get_results_path")
+    results_base = config['output_paths']['results_base']
     
     if parts and parts[0]:
         path_parts = [str(p) for p in parts]
@@ -43,9 +43,9 @@ def get_results_path(*parts, config=None):
 
 def get_logs_path(*parts, config=None):
     """Build logs directory paths"""
-    logs_base = '../analysis_logs'
-    if config:
-        logs_base = config.get('output_paths', {}).get('logs_base', '../analysis_logs')
+    if not config:
+        raise ValueError("config is required for get_logs_path")
+    logs_base = config['output_paths']['logs_base']
     
     if parts and parts[0]:
         path_parts = [str(p) for p in parts]
@@ -55,9 +55,9 @@ def get_logs_path(*parts, config=None):
 
 def get_reference_path(*parts, config=None):
     """Build reference directory paths"""
-    ref_base = '../references'
-    if config:
-        ref_base = config.get('input_paths', {}).get('reference_base', '../references')
+    if not config:
+        raise ValueError("config is required for get_reference_path")
+    ref_base = config['input_paths']['reference_base']
     
     if parts and parts[0]:
         path_parts = [str(p) for p in parts]
@@ -66,15 +66,21 @@ def get_reference_path(*parts, config=None):
 
 
 def get_raw_data_path(pool, config=None):
-    """Build raw data directory path for a pool"""
-    raw_base = '../data'
-    pattern = 'May2025_GW_{pool}'
+    """Get raw data directory path for a pool from sample_info Excel
     
+    This function looks up the fastq_dir from sample_info.xlsx for any sample in the given pool.
+    All samples in a pool should have the same fastq_dir.
+    """
     if config:
-        raw_base = config.get('input_paths', {}).get('raw_data_base', '../data')
-        pattern = config.get('input_paths', {}).get('raw_data_pattern', 'May2025_GW_{pool}')
+        sample_df = load_sample_info(config)
+        pool_samples = sample_df[sample_df['pool'] == pool]
+        if not pool_samples.empty:
+            # All samples in a pool should have the same fastq_dir
+            fastq_dir = pool_samples.iloc[0]['fastq_dir']
+            return fastq_dir
     
-    return os.path.join(raw_base, pattern.format(pool=pool))
+    # Fallback if no config or no samples found
+    raise ValueError(f"Could not find fastq_dir for pool {pool} in sample_info.xlsx")
 
 
 def print_path_configuration(config):
@@ -290,7 +296,7 @@ def get_all_outputs(config, combinations=None, as_dict=False):
     """
     if combinations is None:
         # Get combinations from config
-        combinations = config.get('analysis', {}).get('combinations', [['main', 'raw'], ['all', 'merged']])
+        combinations = config['analysis']['combinations']
         # Convert list of lists to list of tuples
         combinations = [tuple(combo) for combo in combinations]
     

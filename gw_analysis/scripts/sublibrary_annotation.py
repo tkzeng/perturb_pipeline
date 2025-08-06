@@ -45,37 +45,8 @@ from pipeline_utils import (
 
 
 
-def setup_directories(outdir):
-    """Create output directory if it doesn't exist."""
-    os.makedirs(outdir, exist_ok=True)
-    return outdir
 
-
-def get_expected_cells(config, sample_id):
-    """Get expected cells for a sample from sample_info.xlsx."""
-    # Load sample info
-    sample_info_file = config.get('sample_info_file', 'sample_info.xlsx')
-    if not os.path.exists(sample_info_file):
-        raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
-    
-    sample_df = pd.read_excel(sample_info_file)
-    sample_row = sample_df[sample_df['sample_id'] == sample_id]
-    
-    if sample_row.empty:
-        raise ValueError(f"Sample {sample_id} not found in {sample_info_file}")
-    
-    if 'expected_cells' not in sample_df.columns:
-        raise ValueError(f"'expected_cells' column not found in {sample_info_file}. Please add expected cell counts for all samples.")
-    
-    expected_cells = sample_row.iloc[0]['expected_cells']
-    
-    if pd.isna(expected_cells):
-        raise ValueError(f"Expected cells value is missing for sample {sample_id} in {sample_info_file}")
-    
-    return int(expected_cells)
-
-
-# Removed duplicate function - now using pipeline_utils.get_guide_gex_pairings
+# Removed get_expected_cells_from_sample_info - now extracted inline with other sample info
 
 
 def filter_and_prepare_gex(adata, sample_id, expected_cells, no_filter=False, min_umi_filter=2):
@@ -372,6 +343,57 @@ def main():
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
+    # Extract all config values at the boundary
+    log_print("📋 Extracting configuration parameters...")
+    
+    # Sample info file
+    sample_info_file = config['sample_info_file']
+    
+    # Cell filtering parameters
+    min_umi_filter = config['sublibrary_filtering']['min_umi_filter']
+    
+    # Gene annotation reference files
+    ribosomal_genes_path = config['input_paths']['ribosomal_genes']
+    gene_database_path = config['input_paths']['gene_database']
+    cell_cycle_genes_path = config['input_paths']['cell_cycle_genes']
+    
+    # Barcode files for validation
+    barcodes_96_path = config['input_paths']['parsebio_96_barcodes']
+    barcodes_48_path = config['input_paths']['parsebio_48_barcodes']
+    
+    # Plate mapping file
+    plate_maps_file = config.get('plate_maps_file')
+    
+    # Load barcode files once
+    barcodes_96 = pd.read_csv(barcodes_96_path)
+    barcodes_48 = pd.read_csv(barcodes_48_path)
+    
+    # Load sample info once and extract all needed information
+    log_print("📋 Loading sample information...")
+    if not os.path.exists(sample_info_file):
+        raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
+    
+    sample_df = pd.read_excel(sample_info_file)
+    sample_row = sample_df[sample_df['sample_id'] == args.sample_id]
+    
+    if sample_row.empty:
+        raise ValueError(f"Sample {args.sample_id} not found in {sample_info_file}")
+    
+    # Extract expected cells
+    if 'expected_cells' not in sample_df.columns:
+        raise ValueError(f"'expected_cells' column not found in {sample_info_file}")
+    expected_cells = sample_row.iloc[0]['expected_cells']
+    if pd.isna(expected_cells):
+        raise ValueError(f"Expected cells value is missing for sample {args.sample_id}")
+    expected_cells = int(expected_cells)
+    
+    # Extract plate mapping info (will be used later)
+    plate_name = sample_row.iloc[0].get('sample_to_well_mapping')
+    
+    log_print(f"   Sample: {args.sample_id}")
+    log_print(f"   Expected cells: {expected_cells}")
+    log_print(f"   Plate mapping: {plate_name if not pd.isna(plate_name) else 'None'}")
+    
     # Run the pipeline
     try:
         # 1. LOAD AND FILTER GEX DATA
@@ -383,9 +405,7 @@ def main():
         log_print(f"   Loaded {adata_gex.shape[0]} cells x {adata_gex.shape[1]} genes")
         log_print(f"   GEX layers sparsity - mature: {scipy.sparse.issparse(adata_gex.layers['mature'])}, nascent: {scipy.sparse.issparse(adata_gex.layers['nascent'])}, ambiguous: {scipy.sparse.issparse(adata_gex.layers['ambiguous'])}")
         
-        # Get expected cells and filter
-        expected_cells = get_expected_cells(config, args.sample_id)
-        min_umi_filter = config.get('sublibrary_filtering', {}).get('min_umi_filter', 2)
+        # Filter using the expected cells we extracted above
         adata_gex = filter_and_prepare_gex(adata_gex, args.sample_id, expected_cells, args.skip_filtering, min_umi_filter)
         gc.collect()  # Clean up after filtering
         
@@ -415,7 +435,7 @@ def main():
 
         # 4. GENE ANNOTATION
         log_print("\n🏷️  4. ADDING GENE ANNOTATIONS...")
-        add_comprehensive_gene_annotations(adata)
+        add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path)
 
         # 5. QC METRICS
         log_print("\n📊 5. CALCULATING QC METRICS...")
@@ -427,22 +447,15 @@ def main():
         adata.obs['pool'] = pool
         adata.obs['sample_id'] = args.sample_id
         
-        # Get plate mapping name from sample_info.xlsx
-        sample_info_path = config.get('sample_info_file', 'sample_info.xlsx')
-        sample_df = pd.read_excel(sample_info_path)
-        sample_row = sample_df[sample_df['sample_id'] == args.sample_id]
-        
-        if sample_row.empty:
-            raise ValueError(f"Sample {args.sample_id} not found in {sample_info_path}")
-        
-        plate_name = sample_row.iloc[0].get('sample_to_well_mapping')
+        # Use the plate_name we already extracted earlier
         if pd.isna(plate_name):
             log_print("⚠️  No plate mapping specified, skipping cell-to-sample mapping")
         else:
             # Map cells to samples based on Parse Bio barcodes
             log_print(f"   Using plate mapping: {plate_name}")
-            plate_maps_file = config['plate_maps_file']
-            map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file=plate_maps_file)
+            if not plate_maps_file:
+                raise ValueError("plate_maps_file must be specified in config for plate mapping")
+            map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, barcodes_96, barcodes_48)
         
         # Process guide assignments (currently a stub function)
         # filter_guides_by_reference(adata)  # Skip - not needed for this pipeline

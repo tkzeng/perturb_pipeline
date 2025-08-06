@@ -1,0 +1,241 @@
+"""
+Configuration file containing sample-to-well mappings for sublibrary combination.
+
+This file should be populated with your specific sample-to-well mappings.
+Each mapping defines how samples are organized within a sublibrary.
+"""
+
+# =============================================================================
+# SAMPLE-TO-WELL MAPPINGS
+# =============================================================================
+
+# Sample-to-well mappings are now loaded dynamically from Excel files:
+# - sample_info.xlsx: Contains 'sample_to_well_mapping' column that specifies which plate to use
+# - plate_maps.xlsx: Contains the actual well-to-sample mappings in separate sheets
+#
+# Use get_sample_to_well_mapping_from_plates() to load mappings dynamically
+
+
+# =============================================================================
+# DATA PATHS AND CONFIGURATION
+# =============================================================================
+
+# Base data path - adjust as needed for your directory structure
+DATA_PATHS = {
+    "base": "../analysis_results"  # Adjust to match your Snakemake output structure
+}
+
+# Sample information file
+sample_info_file = "../references/sample_info.xlsx"
+
+# Reference files for annotation and filtering
+REFERENCE_FILES = {
+    "cell_cycle_genes": "../references/regev_lab_cell_cycle_genes.txt",
+    "ribosomal_genes": "../references/ribosomal.txt",
+    "gene_database": "../references/gencode.v46.annotation.db"
+    # Note: guide filtering is not implemented in current pipeline (filter_guides_by_reference is a stub)
+    # Add guide reference file here when implementing guide filtering
+}
+
+# Barcode files for Parse Biosciences well mapping
+BARCODE_FILES = {
+    "96_well": "../references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_n198_v5.csv",
+    "48_well": "../references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_v2.csv"
+}
+
+# Expected cell count configurations (optional - for filtering)
+# You can add these if you want to implement cell filtering similar to statin_perturb
+EXPECTED_CELLS = {
+    "default": 5000,  # Default expected cells per library
+    # Add specific overrides if needed:
+    # "specific_library_name": 10000,
+}
+
+# Cell filtering thresholds (optional)
+CELL_FILTER_THRESHOLDS = {
+    "max_total_counts": 40000,
+    "max_mt_percent": 20,
+    "min_genes": 1000,
+    "default_min_counts": 2000,
+    # Add specific sample overrides if needed:
+    # "special_samples": {
+    #     "sample_name": 1500,
+    # }
+}
+
+# =============================================================================
+# HELPER FUNCTIONS FOR INTEGRATION
+# =============================================================================
+
+def get_expected_cells(lib_name):
+    """
+    Get expected cell count for a library.
+    
+    Parameters:
+    -----------
+    lib_name : str
+        Library name
+        
+    Returns:
+    --------
+    int: Expected number of cells
+    """
+    return EXPECTED_CELLS.get(lib_name, EXPECTED_CELLS["default"])
+
+def load_sample_info(sample_info_file):
+    """
+    Load sample information from Excel file.
+    
+    Parameters:
+    -----------
+    sample_info_file : str
+        Path to sample_info.xlsx file
+        
+    Returns:
+    --------
+    pd.DataFrame: Sample information dataframe
+    """
+    import pandas as pd
+    return pd.read_excel(sample_info_file)
+
+def load_plate_maps(plate_maps_file):
+    """
+    Load plate mapping information from Excel file.
+    
+    Parameters:
+    -----------
+    plate_maps_file : str
+        Path to plate_maps.xlsx file
+        
+    Returns:
+    --------
+    dict: Dictionary with plate names as keys and DataFrames as values
+    """
+    import pandas as pd
+    return pd.read_excel(plate_maps_file, sheet_name=None)
+
+def get_sample_to_well_mapping_from_plates(sample_id, sample_info_file, plate_maps_file):
+    """
+    Get sample-to-well mapping for a specific sample using plate maps.
+    
+    Parameters:
+    -----------
+    sample_id : str
+        Sample ID to get mapping for
+    sample_info_file : str
+        Path to sample_info.xlsx file (required)
+    plate_maps_file : str
+        Path to plate_maps.xlsx file (required)
+        
+    Returns:
+    --------
+    dict: Dictionary mapping biological sample names to lists of wells
+    """
+    import pandas as pd
+    
+    # Load sample info to get the plate mapping for this sample
+    sample_df = load_sample_info(sample_info_file)
+    sample_row = sample_df[sample_df['sample_id'] == sample_id]
+    
+    if sample_row.empty:
+        raise ValueError(f"Sample {sample_id} not found in sample_info.xlsx")
+    
+    plate_name = sample_row.iloc[0]['sample_to_well_mapping']
+    if pd.isna(plate_name):
+        raise ValueError(f"No plate mapping specified for sample {sample_id}")
+    
+    # Load plate maps
+    plate_maps = load_plate_maps(plate_maps_file)
+    
+    if plate_name not in plate_maps:
+        raise ValueError(f"Plate {plate_name} not found in plate_maps.xlsx. Available plates: {list(plate_maps.keys())}")
+    
+    plate_df = plate_maps[plate_name]
+    
+    # Create sample-to-well mapping
+    sample_to_wells = {}
+    for _, row in plate_df.iterrows():
+        well = row['Well Position']
+        biological_sample = row['Sample']
+        
+        if pd.isna(biological_sample):
+            continue
+            
+        if biological_sample not in sample_to_wells:
+            sample_to_wells[biological_sample] = []
+        sample_to_wells[biological_sample].append(well)
+    
+    return sample_to_wells
+
+def load_barcode_files():
+    """Load and return barcode mapping files."""
+    import pandas as pd
+    barcodes_96 = pd.read_csv(BARCODE_FILES["96_well"])
+    barcodes_48 = pd.read_csv(BARCODE_FILES["48_well"])
+    return barcodes_96, barcodes_48
+
+def create_well_to_sample_mapping_from_plates(plate_name, plate_maps_file):
+    """Create mapping from wells to biological samples and all metadata for a specific plate."""
+    import pandas as pd
+    
+    plate_maps = load_plate_maps(plate_maps_file)
+    
+    if plate_name not in plate_maps:
+        raise ValueError(f"Plate {plate_name} not found in plate_maps.xlsx")
+    
+    plate_df = plate_maps[plate_name]
+    
+    # Create well→sample mapping
+    well_to_sample = {}
+    # Create well→metadata mapping for all columns
+    well_to_metadata = {}
+    
+    for _, row in plate_df.iterrows():
+        well = row['Well Position']
+        biological_sample = row['Sample']
+        
+        if pd.isna(biological_sample):
+            continue
+            
+        if well in well_to_sample:
+            raise RuntimeError(f"CRITICAL: Well {well} maps to multiple samples in {plate_name}")
+        
+        well_to_sample[well] = biological_sample
+        
+        # Store all metadata columns (except Well Position)
+        metadata = {}
+        for col in plate_df.columns:
+            if col != 'Well Position' and not pd.isna(row[col]):
+                metadata[col] = row[col]
+        well_to_metadata[well] = metadata
+    
+    return well_to_sample, well_to_metadata
+
+# =============================================================================
+# INSTRUCTIONS FOR SETUP
+# =============================================================================
+
+"""
+TO SET UP THIS CONFIG FILE:
+
+1. Replace the example SAMPLE_TO_WELL_* dictionaries with your actual mappings
+2. Make sure each mapping name matches what you put in the 'sample_to_well_mapping' 
+   column of your sample_info.xlsx file
+3. Adjust DATA_PATHS["base"] to match your directory structure
+4. Optionally configure EXPECTED_CELLS and CELL_FILTER_THRESHOLDS
+
+Example sample_info.xlsx structure:
+pool    | sample_id | sample_type | sample_to_well_mapping
+--------|-----------|-------------|----------------------
+pool1   | gex_1     | gex         | SAMPLE_TO_WELL_POOL1_GEX
+pool1   | gex_2     | gex         | SAMPLE_TO_WELL_POOL1_GEX  
+pool1   | guide_1   | guide       | SAMPLE_TO_WELL_POOL1_GUIDE
+pool2   | gex_3     | gex         | SAMPLE_TO_WELL_POOL2_GEX
+pool2   | guide_2   | guide       | SAMPLE_TO_WELL_POOL2_GUIDE
+
+The combination scripts will:
+1. Read sample_info.xlsx to find which samples belong to each pool
+2. Use the 'sample_to_well_mapping' column to load the appropriate mapping from this file
+3. Process each sublibrary using its specific mapping
+4. Combine sublibraries within each pool
+"""

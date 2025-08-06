@@ -17,6 +17,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import scanpy as sc
+import os
 
 def load_h5ad_matrix(h5ad_file):
     """Load count matrix from kallisto h5ad output."""
@@ -163,10 +164,9 @@ def calculate_umis_in_cells_pct(adata, methods_results):
 
 def get_cell_calling_params(config, sample_id):
     """Get cell calling parameters for a specific sample."""
-    import os
     
     # Load sample-specific parameters from sample_info file (REQUIRED)
-    sample_info_file = config.get('sample_info_file', 'sample_info.xlsx')
+    sample_info_file = config['sample_info_file']
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
@@ -190,7 +190,7 @@ def get_cell_calling_params(config, sample_id):
     params = {'expected_cells': int(row['expected_cells'])}
     
     # Optional parameters with config defaults
-    defaults = config.get('cell_calling', {}).get('defaults', {})
+    defaults = config['cell_calling']['defaults']
     if pd.notna(row.get('min_umi_threshold')):
         params['min_umi_threshold'] = int(row['min_umi_threshold'])
     else:

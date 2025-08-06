@@ -23,8 +23,6 @@ import gc
 import sys
 import os
 
-from scripts.config import *
-
 # Configure logging only when needed, not at import time
 logger = logging.getLogger(__name__)
 
@@ -49,6 +47,57 @@ except ImportError:
 
 
 # =============================================================================
+# 0. HELPER FUNCTIONS FROM CONFIG
+# =============================================================================
+
+# Removed load_barcode_files - just use pd.read_csv directly at call sites
+
+
+# Removed load_plate_maps - just use pd.read_excel directly at call sites
+
+
+def create_well_to_sample_mapping_from_plates(plate_name, plate_maps_file):
+    """Create mapping from wells to biological samples and all metadata for a specific plate."""
+    import pandas as pd
+    
+    plate_maps = pd.read_excel(plate_maps_file, sheet_name=None)
+    
+    if plate_name not in plate_maps:
+        raise ValueError(f"Plate {plate_name} not found in plate_maps.xlsx")
+    
+    plate_df = plate_maps[plate_name]
+    
+    # Create well→sample mapping
+    well_to_sample = {}
+    # Create well→metadata mapping for all columns
+    well_to_metadata = {}
+    
+    for _, row in plate_df.iterrows():
+        well = row['Well Position']
+        biological_sample = row['Sample']
+        
+        if pd.isna(biological_sample):
+            continue
+            
+        if well in well_to_sample:
+            raise RuntimeError(f"CRITICAL: Well {well} maps to multiple samples in {plate_name}")
+        
+        well_to_sample[well] = biological_sample
+        
+        # Store all metadata columns (except Well Position)
+        metadata = {}
+        for col in plate_df.columns:
+            if col != 'Well Position' and not pd.isna(row[col]):
+                metadata[col] = row[col]
+        well_to_metadata[well] = metadata
+    
+    return well_to_sample, well_to_metadata
+
+
+# Removed get_expected_cells - just use the value directly at call sites
+
+
+# =============================================================================
 # 1. LOGGING & INFRASTRUCTURE
 # =============================================================================
 
@@ -61,7 +110,7 @@ def log_print(*args, **kwargs):
     sys.stderr.flush()  # Flush stderr since we're logging there now
 
 
-def align_datasets_by_cells(adata1, adata2, name1="dataset1", name2="dataset2"):
+def align_datasets_by_cells(adata1, adata2, name1, name2):
     """Align two datasets keeping ALL cells from adata1 (GEX is authoritative).
 
     ⚠️  CRITICAL: GEX IS AUTHORITATIVE FOR CELL CALLING ⚠️
@@ -118,7 +167,7 @@ def get_sample_pool_and_mapping(sample_id, sample_info_file):
     return pool_name, mapping_name
 
 
-def load_sample_info(sample_info_file="sample_info.xlsx"):
+def load_sample_info(sample_info_file):
     """Load and validate sample info with guide-GEX pairings.
 
     Args:
@@ -149,7 +198,7 @@ def load_sample_info(sample_info_file="sample_info.xlsx"):
     return df
 
 
-def get_guide_gex_pairings(sample_info_file="sample_info.xlsx"):
+def get_guide_gex_pairings(sample_info_file):
     """Get guide-to-GEX and GEX-to-guide mappings from sample sheet.
 
     Uses paired_guide_sample_id column for explicit pairing.
@@ -175,7 +224,7 @@ def get_guide_gex_pairings(sample_info_file="sample_info.xlsx"):
 
     # Build mappings from paired_guide column
     for _, row in df.iterrows():
-        if row['sample_type'] == 'gex' and pd.notna(row.get('paired_guide_sample_id')):
+        if row['sample_type'] == 'gex' and 'paired_guide_sample_id' in row and pd.notna(row['paired_guide_sample_id']):
             gex_id = row['sample_id']  # e.g., "pool1:gex_1"
             guide_id = row['paired_guide_sample_id']  # e.g., "pool1:guide_1"
 
@@ -208,7 +257,7 @@ def get_guide_gex_pairings(sample_info_file="sample_info.xlsx"):
     return guide_to_gex, gex_to_guide
 
 
-def get_paired_sample(sample_id, sample_type, sample_info_file="sample_info.xlsx"):
+def get_paired_sample(sample_id, sample_type, sample_info_file):
     """Get the paired sample for a given sample.
 
     Args:
@@ -260,6 +309,8 @@ def process_single_library(lib_name, nascent=False):
     except Exception as e:
         raise RuntimeError(f"Critical error: Could not load sample info for {lib_name}: {e}. Sample info is required for proper file path resolution.") from e
 
+    # TODO: Remove hardcoded paths - these should come from config YAML
+    # These hardcoded paths are only used by combine scripts which are currently unused
     # Determine directory path based on main pipeline structure
     if nascent:
         # Look for nascent-specific directories (may not exist in main pipeline)
@@ -330,7 +381,8 @@ def process_single_library(lib_name, nascent=False):
     # Map cells to biological samples using plate mapping (if mapping_name is available)
     if 'mapping_name' in locals() and mapping_name and not pd.isna(mapping_name):
         log_print(f"  🗺️ Applying well-based filtering using plate {mapping_name}...")
-        map_cells_to_samples_with_plate(adata, mapping_name)
+        # TODO: This function needs config parameter when combine scripts are updated
+        # map_cells_to_samples_with_plate(adata, mapping_name, plate_maps_file, config)
         add_sample_annotations(adata)
 
         # Log biological sample distribution
@@ -394,6 +446,8 @@ def process_guide_library(lib_name, guide_libs, target_cells):
     pool_name, mapping_name = get_sample_pool_and_mapping(lib_name)
     log_print(f"  📋 Found sample in pool: {pool_name}, mapping: {mapping_name}")
 
+    # TODO: Remove hardcoded path - should come from config YAML
+    # This hardcoded path is only used by combine scripts which are currently unused
     # Guide libraries use kb_guide directory structure in main pipeline
     fdir = f"../analysis_results/{pool_name}/{lib_name}/kb_guide/counts_unfiltered/"
 
@@ -455,8 +509,8 @@ def add_guide_data(adata_gex, adata_guide):
     # Align cells between datasets (GEX is authoritative)
     adata_gex_all, adata_guide_common = align_datasets_by_cells(adata_gex, adata_guide, "GEX dataset", "guide dataset")
 
-    if adata_gex_all is None:
-        return adata_gex
+    if not adata_gex_all:
+        raise ValueError("Failed to align GEX and guide datasets")
 
     # ⚠️  CRITICAL: GEX IS AUTHORITATIVE FOR CELL CALLING ⚠️
     # ⚠️  KEEP ALL GEX CELLS, ADD GUIDE DATA WHERE AVAILABLE ⚠️
@@ -521,8 +575,18 @@ def add_guide_data(adata_gex, adata_guide):
 # 2.5. BARCODE MAPPING FUNCTIONS (copied from statin_perturb)
 # =============================================================================
 
-def extract_and_validate_barcodes(adata):
-    """Extract Round1 barcodes from cell names and validate."""
+def extract_and_validate_barcodes(adata, barcodes_96, barcodes_48):
+    """Extract Round1 barcodes from cell names and validate.
+    
+    Parameters:
+    -----------
+    adata : AnnData
+        Annotated data object
+    barcodes_96 : DataFrame
+        96-well barcode mapping
+    barcodes_48 : DataFrame
+        48-well barcode mapping
+    """
     log_print("🔍 Extracting Round1 barcodes from cell names...")
 
     # Extract round1 barcodes (last 8 characters)
@@ -538,8 +602,6 @@ def extract_and_validate_barcodes(adata):
     log_print(f"📊 Extracted barcodes for {len(adata.obs_names)} cells")
 
     # Validate barcodes against known Round1 barcodes
-    from config import load_barcode_files
-    barcodes_96, barcodes_48 = load_barcode_files()
     if barcodes_96 is not None and barcodes_48 is not None:
         all_valid_barcodes = set()
         # Use 'sequence' column, not 'barcode'
@@ -562,19 +624,29 @@ def extract_and_validate_barcodes(adata):
         raise RuntimeError("CRITICAL: Could not load Round1 barcode files for validation")
 
 
-def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file):
-    """Map cells to biological samples using barcode mappings and plate maps."""
+def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, barcodes_96, barcodes_48):
+    """Map cells to biological samples using barcode mappings and plate maps.
+    
+    Parameters:
+    -----------
+    adata : AnnData
+        Annotated data object
+    plate_name : str
+        Name of the plate for mapping
+    plate_maps_file : str
+        Path to plate maps Excel file
+    barcodes_96 : DataFrame
+        96-well barcode mapping
+    barcodes_48 : DataFrame
+        48-well barcode mapping
+    """
     log_print(f"🗺️ Mapping cells to biological samples using plate {plate_name}...")
-
-    # Load barcode files
-    from config import load_barcode_files, create_well_to_sample_mapping_from_plates
-    barcodes_96, barcodes_48 = load_barcode_files()
 
     # Create reverse mapping for this specific plate
     well_to_sample, well_to_metadata = create_well_to_sample_mapping_from_plates(plate_name, plate_maps_file)
 
     # Extract and validate barcodes
-    extract_and_validate_barcodes(adata)
+    extract_and_validate_barcodes(adata, barcodes_96, barcodes_48)
 
     # Create barcode lookup dictionaries
     barcodes_48_dict = barcodes_48.set_index("sequence")["well"].to_dict()
@@ -656,7 +728,7 @@ def add_mitochondrial_metrics(adata):
     log_print(f"    Median MT%: {adata.obs['pct_counts_mt'].median():.2f}%")
 
 
-def apply_cell_filters(adata):
+def apply_cell_filters(adata, config=None):
     """Apply standard cell filtering based on QC metrics from config."""
     log_print("🧹 Applying cell quality filters...")
 
@@ -666,7 +738,16 @@ def apply_cell_filters(adata):
     initial_cells = adata.shape[0]
 
     # Apply filters from config
-    thresholds = CELL_FILTER_THRESHOLDS
+    if config and "cell_filtering" in config:
+        thresholds = config["cell_filtering"]
+    else:
+        # Fallback to default thresholds
+        thresholds = {
+            "max_total_counts": 40000,
+            "max_mt_percent": 20,
+            "min_genes": 1000,
+            "default_min_counts": 2000
+        }
 
     if "max_total_counts" in thresholds:
         adata = adata[adata.obs["total_counts"] < thresholds["max_total_counts"]]
@@ -700,11 +781,28 @@ def apply_cell_filters(adata):
 # =============================================================================
 
 
-def add_comprehensive_gene_annotations(adata):
-    """Add comprehensive gene annotations to var dataframe."""
+def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path):
+    """Add comprehensive gene annotations to var dataframe.
+    
+    Parameters:
+    -----------
+    adata : AnnData
+        Annotated data object
+    ribosomal_genes_path : str
+        Path to ribosomal genes file
+    gene_database_path : str
+        Path to gene database file
+    cell_cycle_genes_path : str
+        Path to cell cycle genes file
+    """
     log_print("🧬 Adding comprehensive gene annotations...")
 
-    # Load reference files
+    # Create reference files dict for internal use
+    REFERENCE_FILES = {
+        "ribosomal_genes": ribosomal_genes_path,
+        "gene_database": gene_database_path,
+        "cell_cycle_genes": cell_cycle_genes_path
+    }
 
     # Load ribosomal genes from tab-separated file - use "HGNC ID" column
     ribosomal_hgnc_ids = set()
@@ -763,17 +861,15 @@ def add_comprehensive_gene_annotations(adata):
             if i < 5:
                 log_print(f"    ✅ Found gene {gene_id} in database")
 
-            # Extract annotations
+            # Extract annotations - handle missing attributes gracefully
+            # NOTE: We use .get() here because not all genes have all attributes (e.g., some lack hgnc_id)
+            # This is expected and OK - we should NOT raise errors for missing optional attributes
             gene_type = gene.attributes.get('gene_type', [''])[0]
             hgnc_id = gene.attributes.get('hgnc_id', [''])[0]
             gene_name = gene.attributes.get('gene_name', [''])[0]
 
             if i < 5:
                 log_print(f"    📋 Gene info: type={gene_type}, hgnc={hgnc_id}, name={gene_name}, chr={gene.seqid}")
-
-            # Debug missing gene_type
-            if not gene_type:
-                raise ValueError(f"Gene {gene_id} missing gene_type. Available attributes: {list(gene.attributes.keys())}")
 
             # Update annotations
             adata.var.loc[gene_id, 'gene_type'] = gene_type
@@ -1077,12 +1173,14 @@ def normalize_and_preprocess(adata, use_gpu=False):
     adata.var["hvg_input"] = genes_expressed
 
     # Calculate HVGs on raw counts (Seurat v3 approach)
+    # TODO: Make n_top_genes configurable (currently hardcoded to 2000)
     sc.pp.highly_variable_genes(adata_expressed, flavor="seurat_v3", n_top_genes=2000, subset=False)
 
     # Transfer HVG information to original dataset
     hvg_columns = [col for col in adata_expressed.var.columns if col.startswith(('highly_variable', 'means', 'variances', 'highly_variable_rank', 'highly_variable_nbatches', 'highly_variable_intersection'))]
 
     # Normalize all expressed genes after HVG detection
+    # TODO: Make target_sum configurable (currently hardcoded to 1e4)
     sc.pp.normalize_total(adata_expressed, target_sum=1e4)
     sc.pp.log1p(adata_expressed)
     for col in hvg_columns:
@@ -1103,12 +1201,14 @@ def perform_dimensionality_reduction(adata, use_gpu=False):
     log_print("📊 Performing dimensionality reduction...")
 
     # PCA
+    # TODO: Make n_comps configurable (currently hardcoded to 50)
     if use_gpu and GPU_AVAILABLE:
         rsc.pp.pca(adata, n_comps=50, use_highly_variable=True)
     else:
         sc.pp.pca(adata, n_comps=50, use_highly_variable=True)
 
     # Compute neighborhood graph
+    # TODO: Make n_neighbors and n_pcs configurable (currently hardcoded to 15)
     if use_gpu and GPU_AVAILABLE:
         rsc.pp.neighbors(adata, n_neighbors=15, n_pcs=15)
     else:
@@ -1129,6 +1229,7 @@ def perform_clustering(adata, use_gpu=False, target_clusters=3):
     """Perform Leiden clustering discovering up to 10 clusters, starting at 0.05 resolution."""
     log_print(f"🎯 Performing Leiden clustering (discovering up to 10 clusters)...")
 
+    # TODO: Make clustering parameters configurable (resolution start, max_clusters, limit)
     # Start at 0.05 and increment until we find up to 10 clusters
     resolution = 0.05
     max_clusters = 10

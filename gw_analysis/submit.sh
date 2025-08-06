@@ -5,6 +5,15 @@
 # Example: ./submit.sh --dry-run
 #          ./submit.sh --jobs 50
 #          ./submit.sh --dry-run --rerun-triggers mtime
+#          CONFIG=config.yann_k562.yaml ./submit.sh --dry-run
+
+# Require config file via environment variable
+if [ -z "$CONFIG" ]; then
+    echo "Error: CONFIG environment variable must be set"
+    echo "Usage: CONFIG=config.yann_k562.yaml ./submit.sh [args]"
+    exit 1
+fi
+CONFIG_FILE="$CONFIG"
 
 # Ensure we're in the kb conda environment
 if [[ "$CONDA_DEFAULT_ENV" != "kb" ]]; then
@@ -25,33 +34,35 @@ DEFAULT_ARGS=(
     --keep-incomplete
     --rerun-incomplete
     --printshellcmds
+    --rerun-triggers mtime
     --max-jobs-per-timespan 50/60s
     --default-resources \
         threads=4 \
         mem_mb=32768 \
         runtime=2880 \
-        slurm_partition="pritch,engreitz,hns" \
+        slurm_partition="pritch,engreitz,hns,owners,normal" \
         slurm_account="pritch" \
         slurm_job_name="{rule}"
     # List of allowed rules - comment out any rules you want to skip
     --allowed-rules \
         all \
-        #count_reads \
-        #kallisto_gex \
-        #kallisto_guide \
-        #kallisto_gex_subsampled \
-        #kallisto_guide_subsampled \
-        #generate_combined_whitelist \
-        #inspect_bus_files \
-        #merge_all_fastqs \
-        #filter_and_annotate_sublibrary \
-        #fastp_qc \
-        #calculate_read_statistics \
-        #cell_calling_analysis \
-        #cell_calling_plots \
+        count_reads \
+        kallisto_gex \
+        kite_index \
+        kallisto_guide \
+        kallisto_gex_subsampled \
+        kallisto_guide_subsampled \
+        generate_combined_whitelist \
+        inspect_bus_files \
+        merge_all_fastqs \
+        filter_and_annotate_sublibrary \
+        fastp_qc \
+        calculate_read_statistics \
+        cell_calling_analysis \
+        cell_calling_plots \
         calculate_qc_metrics_stratified \
-        #umi_saturation_analysis \
-        #umi_saturation_analysis_guide \
+        umi_saturation_analysis \
+        umi_saturation_analysis_guide \
         #check_undetermined_barcodes \
         #create_undetermined_fastq \
         #barcode_recovery \
@@ -59,7 +70,7 @@ DEFAULT_ARGS=(
         visualize_consolidated_qc \
         process_pool_metrics \
         generate_qc_report \
-        #calculate_pool_statistics
+        calculate_pool_statistics
 )
 
 # If user didn't specify --jobs, add default
@@ -67,6 +78,10 @@ if [[ ! " $@ " =~ " --jobs " ]] && [[ ! " $@ " =~ " -j " ]]; then
     DEFAULT_ARGS+=(--jobs 100)
 fi
 
+# Add config file argument
+DEFAULT_ARGS+=(--configfile "$CONFIG_FILE")
+
+echo "Using config file: $CONFIG_FILE"
 echo "EXECUTING: snakemake ${DEFAULT_ARGS[@]} $@"
 
 snakemake "${DEFAULT_ARGS[@]}" "$@"

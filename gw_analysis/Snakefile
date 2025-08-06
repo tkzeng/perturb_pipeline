@@ -6,7 +6,7 @@
 # To run sublibrary combination:
 #   snakemake -s Snakefile_sublibrary_combination all_combined --configfile config.yaml
 
-configfile: "config.yaml"
+# Config file must be specified via --configfile when running snakemake
 
 import os
 import sys
@@ -30,8 +30,6 @@ SCRATCH = get_scratch_path(config=config)
 RESULTS = get_results_path(config=config)
 LOGS = get_logs_path(config=config)
 REFERENCES = get_reference_path(config=config)
-RAW_DATA_BASE = config.get('input_paths', {}).get('raw_data_base', '../data')
-RAW_DATA_PATTERN = config.get('input_paths', {}).get('raw_data_pattern', 'May2025_GW_{pool}')
 
 # Print configuration at startup
 print_path_configuration(config)
@@ -44,7 +42,7 @@ IDS = get_sample_ids(config)
 GEX_IDS = get_samples_by_type('gex', config)
 GUIDE_IDS = get_samples_by_type('guide', config)
 # Get guide-GEX pairings from the centralized function
-guide_to_gex, gex_to_guide = get_guide_gex_pairings(config.get('sample_info_file', 'sample_info.xlsx'))
+guide_to_gex, gex_to_guide = get_guide_gex_pairings(config['sample_info_file'])
 
 # Print sample summary
 print_sample_summary(config)
@@ -59,7 +57,9 @@ def load_sample_info_wrapper():
 
 rule all:
     input:
-        get_all_outputs(config)  # Default: main+raw and all+merged 
+        get_all_outputs(config),  # Default: main+raw and all+merged
+        # Temporary: ensure kite index is built
+        f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx" 
 
 rule count_reads:
     input:
@@ -69,7 +69,9 @@ rule count_reads:
         f"{RESULTS}/{{sample_id}}/counts.txt"
     log:
         f"{LOGS}/count_reads_{{sample_id}}.log"
-    threads: 4
+    threads: config["resources"]["light"]["threads"]
+    resources:
+        mem_mb=config["resources"]["light"]["mem_mb"],
     shell:
         f"""
         echo "R1_reads,R2_reads" > {output}
@@ -82,8 +84,8 @@ rule kallisto_gex:
     input:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, wildcards.processing),
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
-        replace=config["paths"]["replace_file"],
-        barcodes=config["paths"]["barcodes_file"],
+        replace=config["input_paths"]["replace_file"],
+        barcodes=config["input_paths"]["barcodes_file"],
         index_idx=f"{REFERENCES}/nascent_all/index.idx",
         t2g=f"{REFERENCES}/nascent_all/t2g.txt",
         cdna=f"{REFERENCES}/nascent_all/cdna.txt",
@@ -94,7 +96,11 @@ rule kallisto_gex:
         script="scripts/run_kb_count.py"
     output:
         kb_info=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/kb_info.json",
-        h5ad=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/counts_unfiltered/adata.h5ad"
+        h5ad=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/counts_unfiltered/adata.h5ad",
+        # BUS files that will be inspected downstream
+        bus_output=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output.bus",
+        bus_unfiltered=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output.unfiltered.bus",
+        bus_modified=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output_modified.unfiltered.bus"
     log:
         f"{LOGS}/kallisto_gex_{{sample_id}}_{{type}}_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -106,11 +112,14 @@ rule kallisto_gex:
         out=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}",
         strand=config["analysis"]["strand"]
     resources:
-        mem_mb=128000,
+        mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
-        24
+        config["resources"]["alignment"]["threads"]
     shell:
         """
+        # Clean up any existing tmp directory to prevent conflicts
+        rm -rf {params.out}/tmp
+        
         # Note: Using --mm for fractional assignment of multimapping reads (even splitting)
         # Alternative: --em uses expectation maximization algorithm (hidden option)
         # Warning: --em can drop reads when genes have no unique reads (s=0 condition in bustools)
@@ -126,20 +135,30 @@ rule kallisto_gex:
 rule kite_index:
     """Build kite index from guides file using kb ref"""
     input:
-        guides=f"{REFERENCES}/guides/{{guide_set}}.txt"
+        guides=lambda wildcards: config['guide_file']
     output:
-        index_idx=f"{REFERENCES}/kite/{{guide_set}}/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{{guide_set}}/t2g.txt",
-        fa=f"{REFERENCES}/kite/{{guide_set}}/mismatch.fa"
+        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        fa=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
     log:
-        f"{LOGS}/kite_index_{{guide_set}}.log"
+        f"{LOGS}/kite_index.log"
     params:
-        outdir=f"{REFERENCES}/kite/{{guide_set}}"
-    threads: 24
+        outdir=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
+    threads: config["resources"]["alignment"]["threads"]
+    resources:
+        mem_mb=config["resources"]["alignment"]["mem_mb"],
     shell:
         """
+        # Check if the installed version has the modified collision detection
+        if ! python -c "import kb_python.ref; import inspect; exit(0 if 'remove_collisions' in dir(kb_python.ref) else 1)" 2>/dev/null; then
+            echo "ERROR: The installed kb_python does not have the modified remove_collisions function"
+            echo "Please install the modified version from the kb_python directory"
+            echo "Run: cd /path/to/modified/kb_python && pip install -e ."
+            exit 1
+        fi
+        
         # Remove existing index files to ensure clean build
-        rm -rf {params.outdir}/*
+        rm -rf {params.outdir}/* tmp
         
         # Build kite index with kb ref
         kb ref -i {output.index_idx} -f1 {output.fa} -g {output.t2g} \
@@ -150,17 +169,21 @@ rule kallisto_guide:
     input:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, wildcards.processing),
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
-        barcodes=config["paths"]["barcodes_file"],
-        replace=config["paths"]["replace_file"],
-        index_idx=lambda wildcards: f"{REFERENCES}/kite/{config.get('guide_set', '250313_ucsf_guides')}/mismatch.idx",
-        t2g=lambda wildcards: f"{REFERENCES}/kite/{config.get('guide_set', '250313_ucsf_guides')}/t2g.txt",
+        barcodes=config["input_paths"]["barcodes_file"],
+        replace=config["input_paths"]["replace_file"],
+        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
         # Ensure barcode recovery is done first if processing recovered reads
         recovery_done=lambda wildcards: f"{SCRATCH}/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
         # Script dependency
         script="scripts/run_kb_count.py"
     output:
         kb_info=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}/kb_info.json",
-        h5ad=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}/counts_unfiltered/adata.h5ad"
+        h5ad=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}/counts_unfiltered/adata.h5ad",
+        # BUS files that will be inspected downstream
+        bus_output=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}/output.bus",
+        bus_unfiltered=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}/output.unfiltered.bus",
+        bus_modified=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}/output_modified.unfiltered.bus"
     log:
         f"{LOGS}/kallisto_guide_{{sample_id}}_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -171,11 +194,14 @@ rule kallisto_guide:
         out=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}",
         strand=config["analysis"]["strand"]
     resources:
-        mem_mb=128000,
+        mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
-        24
+        config["resources"]["alignment"]["threads"]
     shell:
         """
+        # Clean up any existing tmp directory to prevent conflicts
+        rm -rf {params.out}/tmp
+        
         # Run with configured strand option
         python scripts/run_kb_count.py \
             kite {params.strand} \
@@ -188,8 +214,8 @@ rule kallisto_gex_subsampled:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw"),
         read_counts=f"{RESULTS}/{{sample_id}}/counts.txt",
-        replace=config["paths"]["replace_file"],
-        barcodes=config["paths"]["barcodes_file"],
+        replace=config["input_paths"]["replace_file"],
+        barcodes=config["input_paths"]["barcodes_file"],
         index_idx=f"{REFERENCES}/nascent_all/index.idx",
         t2g=f"{REFERENCES}/nascent_all/t2g.txt",
         cdna=f"{REFERENCES}/nascent_all/cdna.txt",
@@ -207,9 +233,14 @@ rule kallisto_gex_subsampled:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_all",
         strand=config["analysis"]["strand"]
     threads:
-        config["analysis"]["threads"]
+        config["resources"]["alignment"]["threads"]
+    resources:
+        mem_mb=config["resources"]["alignment"]["mem_mb"],
     shell:
         """
+        # Clean up any existing tmp directory to prevent conflicts
+        rm -rf {params.out}/tmp
+        
         # Read total read count and calculate target reads
         R1_COUNT=$(tail -n 1 {input.read_counts} | cut -d',' -f1)
         TARGET_READS=$(echo "$R1_COUNT * {wildcards.fraction}" | bc | cut -d'.' -f1)
@@ -228,10 +259,10 @@ rule kallisto_guide_subsampled:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw"),
         read_counts=f"{RESULTS}/{{sample_id}}/counts.txt",
-        replace=config["paths"]["replace_file"],
-        barcodes=config["paths"]["barcodes_file"],
-        index_idx=f"{REFERENCES}/kite/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/t2g.txt",
+        replace=config["input_paths"]["replace_file"],
+        barcodes=config["input_paths"]["barcodes_file"],
+        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
         script="scripts/run_kb_count.py"
     output:
         kb_info=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide/kb_info.json",
@@ -245,9 +276,14 @@ rule kallisto_guide_subsampled:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide",
         strand=config["analysis"]["strand"]
     threads:
-        config["analysis"]["threads"]
+        config["resources"]["alignment"]["threads"]
+    resources:
+        mem_mb=config["resources"]["alignment"]["mem_mb"],
     shell:
         """
+        # Clean up any existing tmp directory to prevent conflicts
+        rm -rf {params.out}/tmp
+        
         # Read total read count and calculate target reads
         R1_COUNT=$(tail -n 1 {input.read_counts} | cut -d',' -f1)
         TARGET_READS=$(echo "$R1_COUNT * {wildcards.fraction}" | bc | cut -d'.' -f1)
@@ -262,7 +298,7 @@ rule kallisto_guide_subsampled:
 
 rule generate_combined_whitelist:
     input:
-        barcodes=config["paths"]["barcodes_file"],
+        barcodes=config["input_paths"]["barcodes_file"],
         script="scripts/generate_barcode_combinations.py"
     output:
         combined=f"{REFERENCES}/barcodes_combined.txt"
@@ -276,33 +312,24 @@ rule generate_combined_whitelist:
 rule inspect_bus_files:
     input:
         combined_whitelist=f"{REFERENCES}/barcodes_combined.txt",
-        kb_info=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/kb_info.json"
+        kb_info=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/kb_info.json",
+        # Explicit BUS file inputs
+        bus_output=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output.bus",
+        bus_unfiltered=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output.unfiltered.bus",
+        bus_modified=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output_modified.unfiltered.bus"
     output:
-        inspect_summary=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/inspect_summary.txt",
         # The key inspect JSON files that calculate_read_statistics needs
         output_inspect=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output_inspect.json",
         output_unfiltered_inspect=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output.unfiltered_inspect.json",
         output_modified_unfiltered_inspect=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}/output_modified.unfiltered_inspect.json"
     log:
         f"{LOGS}/inspect_bus_{{sample_id}}_{{type}}_{{source}}_{{processing}}.log"
-    params:
-        kb_dir=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}"
     shell:
         """
-        # Find all BUS files and inspect them
-        find {params.kb_dir} {params.kb_dir}_forward -name "*.bus" -type f 2>/dev/null | while read bus_file; do
-            # Create output filename based on BUS file path
-            inspect_file="${{bus_file%.bus}}_inspect.json"
-            
-            bustools inspect -o "$inspect_file" -w {input.combined_whitelist} "$bus_file"
-            
-            # Extract key metrics and append to summary
-            echo "=== $bus_file ===" >> {output.inspect_summary}
-            if [ -f "$inspect_file" ]; then
-                cat "$inspect_file" >> {output.inspect_summary}
-                echo "" >> {output.inspect_summary}
-            fi
-        done
+        # Inspect each BUS file and create corresponding inspect JSON
+        bustools inspect -o {output.output_inspect} -w {input.combined_whitelist} {input.bus_output} 2>&1 | tee -a {log}
+        bustools inspect -o {output.output_unfiltered_inspect} -w {input.combined_whitelist} {input.bus_unfiltered} 2>&1 | tee -a {log}
+        bustools inspect -o {output.output_modified_unfiltered_inspect} -w {input.combined_whitelist} {input.bus_modified} 2>&1 | tee -a {log}
         """
 
 rule merge_all_fastqs:
@@ -345,7 +372,7 @@ rule filter_and_annotate_sublibrary:
         # Guide unfiltered kallisto output - specific file for dependency tracking
         guide_h5ad=lambda wildcards: f"{SCRATCH}/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}/counts_unfiltered/adata.h5ad",
         # Config file
-        config_file="config.yaml",
+        config_file=workflow.configfiles[0],
         script="scripts/sublibrary_annotation.py"
     output:
         # Filtered output directory containing h5ad and MTX files
@@ -371,7 +398,7 @@ rule filter_and_annotate_sublibrary:
         gex_kb_dir=f"{SCRATCH}/{{gex_sample_id}}/kb_all_{{source}}_{{processing}}",
         guide_kb_dir=lambda wildcards: f"{SCRATCH}/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}"
     resources:
-        mem_mb=256000,
+        mem_mb=config["resources"]["analysis"]["mem_mb"],
     shell:
         """
         # Build command
@@ -430,13 +457,14 @@ rule calculate_read_statistics:
         f"{LOGS}/calculate_read_statistics_{{sample_id}}_{{type}}_{{source}}_{{processing}}.log"
     params:
         kb_dir=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}",
-        sample_id="{sample_id}"
+        sample_id="{sample_id}",
+        config_file=workflow.configfiles[0]
     shell:
         """
         python3 {input.script} \
             {params.kb_dir} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {params.config_file} \
             --output {output.stats} &> {log}
         """
 
@@ -461,9 +489,9 @@ rule cell_calling_analysis:
         kb_dir=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}",
         sample_id="{sample_id}"
     threads:
-        16
+        config["resources"]["analysis"]["threads"]
     resources:
-        mem_mb=262144,  # 256GB for large matrices with EmptyDrops
+        mem_mb=config["resources"]["analysis"]["mem_mb"],  # For large matrices with EmptyDrops
     shell:
         """
         ml R/4.4
@@ -472,7 +500,7 @@ rule cell_calling_analysis:
             --h5ad_file {input.h5ad} \
             --kb_dir {params.kb_dir} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {workflow.configfiles[0]} \
             --output_dir {output.cell_calling_dir} \
             --ncores {threads} &> {log}
         """
@@ -546,7 +574,7 @@ rule calculate_qc_metrics_stratified:
             --read-stats {input.read_stats} \
             --guide-read-stats {input.guide_stats} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {workflow.configfiles[0]} \
             --stratify-by sample \
             --output {output.qc_metrics_sample} \
             --plot-dir {output.plots_dir} \
@@ -561,7 +589,7 @@ rule calculate_qc_metrics_stratified:
             --read-stats {input.read_stats} \
             --guide-read-stats {input.guide_stats} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {workflow.configfiles[0]} \
             --stratify-by biological_sample \
             --output {output.qc_metrics_bio} \
             --plot-dir {output.plots_dir} \
@@ -576,7 +604,7 @@ rule calculate_qc_metrics_stratified:
             --read-stats {input.read_stats} \
             --guide-read-stats {input.guide_stats} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {workflow.configfiles[0]} \
             --stratify-by well \
             --output {output.qc_metrics_well} \
             --plot-dir {output.plots_dir} \
@@ -613,7 +641,7 @@ rule umi_saturation_analysis:
         """
         python3 {input.script} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {workflow.configfiles[0]} \
             --read_stats {input.read_stats} \
             --output_tsv {output.saturation} \
             --output_plot {output.plot_dir}/{wildcards.sample_id}_umi_saturation.png \
@@ -654,7 +682,7 @@ rule umi_saturation_analysis_guide:
         """
         python3 {input.script} \
             --sample-id {params.sample_id} \
-            --config config.yaml \
+            --config {workflow.configfiles[0]} \
             --read_stats {input.read_stats} \
             --output_tsv {output.saturation} \
             --output_plot {output.plot_dir}/{wildcards.sample_id}_guide_umi_saturation.png \
@@ -673,7 +701,7 @@ rule check_undetermined_barcodes:
     log:
         f"{LOGS}/undetermined_recovery_{{pool}}.log"
     params:
-        fastq_dir=lambda wildcards: f"{RAW_DATA_BASE}/{RAW_DATA_PATTERN.format(pool=wildcards.pool)}",
+        fastq_dir=lambda wildcards: get_raw_data_path(wildcards.pool, config),
         outdir=f"{SCRATCH}/undetermined_index/{{pool}}",
         max_open_files=config["undetermined_recovery"]["max_open_files"]
     shell:
@@ -686,7 +714,7 @@ rule check_undetermined_barcodes:
             python3 -u {input.script} \
                 --fastq-r1 "$UNDETERMINED_R1" \
                 --fastq-r2 "$UNDETERMINED_R2" \
-                --indices "{REFERENCES}/split_lp_primer.xlsx" \
+                --indices "{config[input_paths][primer_info_file]}" \
                 --output-dir {params.outdir} &> {log}
         else
             echo "Undetermined FASTQ files not found for {wildcards.pool}" > {output.report}
@@ -699,8 +727,8 @@ rule check_undetermined_barcodes:
 rule create_undetermined_fastq:
     input:
         recovery_summary=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}/recovery_summary.txt",
-        sample_info=f"{REFERENCES}/sample_info.xlsx",
-        primer_info=f"{REFERENCES}/split_lp_primer.xlsx",
+        sample_info=config["sample_info_file"],
+        primer_info=config["input_paths"]["primer_info_file"],
         script="scripts/create_undetermined_single_sample.py"
     output:
         r1=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R1.fastq.gz",
@@ -728,7 +756,7 @@ rule barcode_recovery:
     input:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, "raw"),
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, "raw"),
-        barcodes=config["paths"]["barcodes_file"],
+        barcodes=config["input_paths"]["barcodes_file"],
         script="scripts/recover_barcodes_simple.py"
     output:
         r1_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R1.fastq.gz",
@@ -958,3 +986,4 @@ rule calculate_pool_statistics:
             --sample-counts {input.sample_counts} \
             --undetermined-counts {input.undetermined_counts} \
             --output {output.stats} &> {log}
+        """

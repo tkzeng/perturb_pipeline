@@ -1,9 +1,12 @@
 # Configuration file for GW_PERTURB analysis
 
+# Analysis name (used for scratch subdirectory)
+analysis_name: "gw_analysis"
+
 # Sample information file
-sample_info_file: "../references/sample_info.xlsx"
+sample_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/sample_info.xlsx"
 sample_info_tab: "sample_info"  # Specify which tab/sheet to read from the Excel file
-plate_maps_file: "../references/plate_maps.xlsx"  # Plate well-to-sample mappings
+plate_maps_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/plate_maps.xlsx"  # Plate well-to-sample mappings
 
 # Sample IDs - will be automatically discovered from sample_info.xlsx
 # Leave empty to process all samples, or specify specific samples
@@ -14,40 +17,34 @@ sample_ids: []
 # User-specified input paths (must exist before running pipeline)
 input_paths:
   # Reference files
-  replace_file: "../references/replace.96.txt"
-  barcodes_file: "../references/barcodes.96.txt"
-  sample_info_file: "../references/sample_info.xlsx"
-  primer_info_file: "../references/split_lp_primer.xlsx"
-  guide_reference: "../references/all_guides.20240917.tsv"
+  replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96.txt"
+  barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96.txt"
+  sample_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/sample_info.xlsx"
+  # Guide reference file for QC analysis - maps guide sequences to target genes
+  guide_reference: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/all_guides.20240917.tsv"
+  # ONLY NEEDED FOR UNDETERMINED READ RECOVERY - maps i5/i7 index sequences to sample names
+  # If not doing undetermined read recovery (processing="raw" only), this file is not used
+  primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
   
   # Reference genome/index locations
-  reference_base: "../references"
+  reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
   nascent_genome: "nascent_all"  # Subdirectory with genome index files
   
-  # Base directory for raw sequencing data
-  raw_data_base: "../data"
-  # Pattern for raw data subdirectories ({pool} will be replaced)
-  raw_data_pattern: "May2025_GW_{pool}"
+  # Base directory for raw sequencing data (deprecated - use fastq_dir in sample_info.xlsx instead)
+  raw_data_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/data"
 
 # Pipeline-created output paths
 output_paths:
-  # Subdirectories under $SCRATCH environment variable
-  # If $SCRATCH is not set, will use /tmp as fallback
-  scratch_subdir: "gw_analysis"  # Main working directory under $SCRATCH
+  # The analysis_name will be used as subdirectory under $SCRATCH environment variable
   temp_subdir: "gw_analysis_tmp"  # Temp directory under $SCRATCH
   
   # Local outputs (relative to working directory)
-  results_base: "../analysis_results"
-  logs_base: "../analysis_logs"
+  results_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/analysis_results"
+  logs_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/analysis_logs"
 
-# Legacy paths section for backwards compatibility
-# Will be deprecated - use input_paths instead
-paths:
-  replace_file: "../references/replace.96.txt"
-  barcodes_file: "../references/barcodes.96.txt"
 
 # Guide library configuration
-guide_set: "250313_ucsf_guides"  # Name of the guides file in ../references/guides/ (without .txt extension)
+guide_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/250313_ucsf_guides.txt"  # Full path to guide sequences file for kallisto indexing
 
 # Analysis parameters
 analysis:
@@ -55,7 +52,7 @@ analysis:
   index_prefix: "nascent"
   threads: 24
   kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
-  strand: "stranded"
+  strand: "forward"
   # Source/processing combinations for pipeline outputs
   combinations:
       #- ["main", "raw"]
@@ -109,9 +106,6 @@ undetermined_recovery:
 qc_analysis:
   # Guide counting cutoffs for QC metrics
   guide_cutoffs: [1, 2, 3, 4, 5]
-  
-  # Guide reference file path
-  guide_reference: "../references/all_guides.20240917.tsv"
 
 # Sublibrary filtering parameters
 sublibrary_filtering:

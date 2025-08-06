@@ -125,11 +125,32 @@ def load_cell_barcodes(cell_calling_dir, sample_id):
 
 
 def load_guide_reference(guide_ref_path):
-    """Load guide reference and create mapping from guide sequence to list of target genes."""
+    """Load guide reference and create mapping from guide sequence to list of target genes.
+    
+    The multi-gene separator is read from a 'separator' column in the file if present,
+    otherwise defaults to '_AND_' for backwards compatibility.
+    
+    Args:
+        guide_ref_path: Path to the guide reference TSV file
+    """
     print(f"Loading guide reference from: {guide_ref_path}")
     
     # Read the TSV file
     guide_df = pd.read_csv(guide_ref_path, sep='\t')
+    
+    # Get separator from file if present, otherwise use default
+    if 'separator' in guide_df.columns:
+        # Get the first non-null separator value
+        separator_values = guide_df['separator'].dropna().unique()
+        if len(separator_values) > 0:
+            multi_gene_separator = str(separator_values[0])
+            print(f"Using multi-gene separator from file: '{multi_gene_separator}'")
+        else:
+            multi_gene_separator = '_AND_'
+            print(f"No separator specified in file, using default: '{multi_gene_separator}'")
+    else:
+        multi_gene_separator = '_AND_'
+        print(f"No separator column in file, using default: '{multi_gene_separator}'")
     
     # Create mapping from guide sequence to list of genes
     guide_to_genes = {}
@@ -142,9 +163,9 @@ def load_guide_reference(guide_ref_path):
         if pd.isna(gene_str) or gene_str == '':
             continue
             
-        # Split multi-gene targets by "_AND_"
-        if '_AND_' in gene_str:
-            genes = gene_str.split('_AND_')
+        # Split multi-gene targets if separator is configured
+        if multi_gene_separator and multi_gene_separator in gene_str:
+            genes = gene_str.split(multi_gene_separator)
         else:
             genes = [gene_str]
         
@@ -968,9 +989,10 @@ def main():
     # Load guide reference
     if 'qc_analysis' not in config:
         raise ValueError("'qc_analysis' section missing from config")
-    if 'guide_reference' not in config['qc_analysis']:
-        raise ValueError("'guide_reference' not specified in qc_analysis config")
-    guide_ref_path = config['qc_analysis']['guide_reference']
+    if 'guide_reference' not in config['input_paths']:
+        raise ValueError("'guide_reference' not specified in input_paths config")
+    guide_ref_path = config['input_paths']['guide_reference']
+    
     if 'guide_counts' in adata.obsm:
         guide_to_genes = load_guide_reference(guide_ref_path)
     else:

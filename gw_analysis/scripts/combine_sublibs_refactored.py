@@ -10,6 +10,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# TODO: Remove dependency on config.py and use YAML config instead
 from config import *
 from scripts.pipeline_utils import *
 

@@ -19,19 +19,29 @@ GW_PERTURB/
 **Required Columns**:
 - `sample_id`: Unique identifier (format: `pool:sample_name`)
 - `pool`: Pool name (e.g., `pool1`, `pool2`)
-- `sample_type`: Either `gex` or `guide`
+- `sample`: Sample name without pool prefix (e.g., `gex_1`, `guide_1`)
+- `sample_type`: Either `gex` or `guide` (rows with other values or NA are ignored)
+- `fastq_dir`: Directory containing FASTQ files for this sample
 - `expected_cells`: Number of expected cells for this sample
+- `paired_guide_sample_id`: For GEX samples, the paired guide sample_id (required for guide-GEX pairing)
 - `sample_to_well_mapping`: Name of plate map sheet in plate_maps.xlsx
-- `biological_sample`: Biological replicate name
 - `min_umi_threshold`: Minimum UMI count for cell calling (optional)
-- `emptydrops_lower`: Lower bound for EmptyDrops algorithm (optional)
+
+**NA/Missing Value Handling**:
+The following values are automatically parsed as NA/missing by pandas:
+- Empty cells
+- "NA", "N/A", "n/a", "NaN", "null", "NULL", "None", "#N/A", "#NA", "-NaN", "-nan", "nan"
+- Rows with NA or any value other than `gex`/`guide` in `sample_type` are excluded from processing
+- Guide samples must have a paired GEX sample; unpaired guides will cause an error
 
 **Example**:
 ```
-sample_id         pool    sample_type  expected_cells  sample_to_well_mapping
-pool1:gex_rep1    pool1   gex         5000            plate1_mapping
-pool1:guide_rep1  pool1   guide       5000            plate1_mapping
+sample_id         pool    sample    sample_type  fastq_dir                     expected_cells  paired_guide_sample_id
+pool1:gex_1       pool1   gex_1     gex         /path/to/pool1/fastqs/        5000            pool1:guide_1
+pool1:guide_1     pool1   guide_1   guide       /path/to/pool1/fastqs/        5000            NA
+pool1:control_1   pool1   control_1 NA          /path/to/pool1/fastqs/        NA              NA
 ```
+Note: The `control_1` row would be ignored due to NA in sample_type.
 
 ### `../references/plate_maps.xlsx`
 **Purpose**: Maps Parse Bio well barcodes to biological samples  
@@ -59,15 +69,13 @@ pool1:guide_rep1  pool1   guide       5000            plate1_mapping
 
 ## 3. Guide Library Files
 
-### `../references/guides/[guide_set].txt`
-**Purpose**: Guide sequences and metadata for your CRISPR library  
+### Guide sequence file (specified in config.yaml as `guide_file`)
+**Purpose**: Guide sequences for kallisto indexing  
 **Format**: Tab-delimited with columns:
-- `id`: Unique guide identifier
-- `seq`: Guide sequence (20-21bp)
-- `gene`: Target gene name
-- Other metadata columns as needed
+- Column 1: Guide sequence
+- Column 2: Guide ID/name
 
-**Note**: The `guide_set` parameter in config.yaml should match the filename (without .txt)
+**Note**: Specify the full path to this file in config.yaml as `guide_file`
 
 ### `../references/all_guides.20240917.tsv`
 **Purpose**: Master reference of all guide sequences  
@@ -120,15 +128,14 @@ kb ref \
 **Purpose**: Raw FASTQ files from sequencing  
 **Directory Structure**:
 ```
-../data/
-├── May2025_GW_pool1/
-│   ├── pool1_gex_rep1_R1.fastq.gz
-│   ├── pool1_gex_rep1_R2.fastq.gz
-│   ├── pool1_guide_rep1_R1.fastq.gz
-│   ├── pool1_guide_rep1_R2.fastq.gz
+The fastq_dir column in sample_info.xlsx specifies where to find FASTQ files for each pool.
+For example:
+/path/to/pool1/
+│   ├── gex_sample_R1.fastq.gz
+│   ├── gex_sample_R2.fastq.gz
+│   ├── guide_sample_R1.fastq.gz
+│   ├── guide_sample_R2.fastq.gz
 │   └── Undetermined_R1.fastq.gz  # For barcode recovery
-└── May2025_GW_pool2/
-    └── ... (similar structure)
 ```
 
 **Naming Convention**: 
@@ -139,8 +146,13 @@ kb ref \
 ## 7. Optional Analysis Files
 
 ### `../references/split_lp_primer.xlsx`
-**Purpose**: Primer sequences for demultiplexing (if applicable)  
-**Format**: Excel file with primer information
+**Purpose**: Maps i5/i7 index sequences to sample names  
+**When Used**: ONLY needed for undetermined read recovery workflow  
+**Not Required If**: You're only processing main reads (processing="raw")  
+**Format**: Excel file with columns:
+- Column B: Primer/sample name
+- Column D: Index sequence
+**Used By**: `create_undetermined_fastq` rule to assign recovered undetermined reads back to samples
 
 ## Setting Up for a New System
 
