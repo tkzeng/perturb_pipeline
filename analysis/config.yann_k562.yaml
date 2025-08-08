@@ -7,6 +7,11 @@ guide_file: "references_yann_k562/k562_yann_guides.txt"
 # Sample selection (leave empty to process all samples in sample_info_file)
 sample_ids: []
 
+# SLURM cluster configuration
+slurm:
+  partition: "pritch,engreitz,hns,owners,normal"  # Comma-separated list of partitions
+  account: "pritch"  # SLURM account for job submission
+
 analysis:
   # Chemistry v2:
   # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111

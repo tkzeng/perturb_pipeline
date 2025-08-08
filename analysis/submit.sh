@@ -15,6 +15,10 @@ if [ -z "$CONFIG" ]; then
 fi
 CONFIG_FILE="$CONFIG"
 
+# Extract SLURM settings from config file
+SLURM_PARTITION=$(python -c "import yaml; config = yaml.safe_load(open('$CONFIG_FILE')); print(config['slurm']['partition'])")
+SLURM_ACCOUNT=$(python -c "import yaml; config = yaml.safe_load(open('$CONFIG_FILE')); print(config['slurm']['account'])")
+
 # Ensure we're in the kb conda environment
 if [[ "$CONDA_DEFAULT_ENV" != "kb" ]]; then
     echo "Error: Must be in 'kb' conda environment"
@@ -40,8 +44,8 @@ DEFAULT_ARGS=(
         threads=4 \
         mem_mb=32768 \
         runtime=2880 \
-        slurm_partition="pritch,engreitz,hns,owners,normal" \
-        slurm_account="pritch" \
+        slurm_partition="$SLURM_PARTITION" \
+        slurm_account="$SLURM_ACCOUNT" \
         slurm_job_name="{rule}"
     # List of allowed rules - comment out any rules you want to skip
     --allowed-rules \
