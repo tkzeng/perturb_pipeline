@@ -29,29 +29,51 @@ analysis:
   # Technical parameters (rarely changed)
   genome_types: ["all"]
   index_prefix: "nascent"
-  # kb_chemistry string for Parse Bio kit v2 (current/most common version)
-  # For Parse Bio kit v1 or v3, use different chemistry strings - contact Parse Bio support
-  kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
+  # kb_chemistry string for Parse Bio kits - MUST match your chemistry version:
+  #
+  # Chemistry v2 (most common):
+  # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111
+  # kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
+  #
+  # Chemistry v3 (newer kits):
+  # Amplicon: NNNNNNNNNN33333333ATGAGGGGTCAG22222222TCCAACCACCTC11111111
+  # kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"
+  kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"  # Using v2 chemistry
 
 # ============================================================================
-# STABLE INFRASTRUCTURE (Usually don't change between runs)
+# KIT-SPECIFIC CONFIGURATION (CHECK for each experiment!)
 # ============================================================================
 
-# Parse Bio kit configuration (stable across experiments)
+# Parse Bio kit configuration (MUST match your experiment's kit)
 input_paths:
   # Parse Bio barcode files
-  # IMPORTANT: Number of barcodes must match your Parse Bio kit type:
-  # - 96-well kit: Use replace.96.txt and barcodes.96.txt (96 barcodes each)
-  # - 48-well kit: Use replace.48.txt and barcodes.48.txt (48 barcodes each)
-  # - Mini kit (12-well): Use replace.12.txt and barcodes.12.txt (12 barcodes each)
-  replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96.txt"
-  barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96.txt"
+  # IMPORTANT: Choose files that match your Parse Bio kit type AND chemistry version:
+  # 
+  # Chemistry v2 (most common):
+  # - 96-well kit: Use replace.96_v2.txt and barcodes.96_v2.txt
+  # - 48-well kit: Use replace.48_v2.txt and barcodes.48_v2.txt  
+  # - Mini kit (12-well): Use replace.12_v2.txt and barcodes.12_v2.txt
+  #
+  # Chemistry v3 (newer kits):
+  # - 96-well kit: Use replace.96_v3.txt and barcodes.96_v3.txt
+  # - 48-well kit: Use replace.48_v3.txt and barcodes.48_v3.txt
+  # - Mini kit (12-well): Use replace.12_v3.txt and barcodes.12_v3.txt
+  #
+  # Legacy files (without version suffix) are chemistry v2 96-well
+  replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96_v2.txt"
+  barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96_v2.txt"
   # Guide reference file for QC analysis - maps guide IDs to target genes
   guide_reference: "references_yann_k562/k562_yann_guides_qc_reference.txt"
-  # ONLY NEEDED FOR UNDETERMINED READ RECOVERY - maps i5/i7 index sequences to sample names
+  # Primer info file - CHECK FOR EACH EXPERIMENT!
+  # Maps i5/i7 index sequences to sample names for undetermined read recovery
+  # IMPORTANT: Verify this file matches YOUR experiment's primer/index design
   # If not doing undetermined read recovery (processing="raw" only), this file is not used
   primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
   
+# ============================================================================
+# STABLE REFERENCE FILES (Usually don't change between runs)
+# ============================================================================
+
   # Gene annotation reference files
   ribosomal_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ribosomal.txt"
   cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
@@ -59,11 +81,18 @@ input_paths:
   
   # Parse Bio barcode CSV file for well mapping (from splitpipe software)
   # This CSV maps barcode sequences to well positions (A1, B2, etc.)
-  # Use the appropriate file for your kit:
-  # - 96-well: bc_data_n198_v5.csv or similar
-  # - 48-well: bc_data_v2.csv or similar
-  # - 12-well mini: bc_data_mini.csv or similar
-  parsebio_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_n198_v5.csv"
+  # Use the appropriate file for your kit and chemistry version:
+  #
+  # Chemistry v2:
+  # - 96-well: bc_data_n198_v5.csv
+  # - 48-well: bc_data_n99_v5.csv
+  # - 12-well: bc_data_n24_v4.csv
+  #
+  # Chemistry v3:
+  # - 96-well: bc_data_n299_R1_v3_6.csv
+  # - 48-well: bc_data_n141_R1_v3_6.csv
+  # - 12-well: bc_data_n37_R1_v3_6.csv
+  parsebio_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.6.0/splitpipe/barcodes/bc_data_n198_v5.csv"
   
   # Reference genome/index locations
   reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
