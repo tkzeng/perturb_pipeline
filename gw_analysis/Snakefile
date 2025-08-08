@@ -478,7 +478,7 @@ rule cell_calling_analysis:
         cell_calling_dir=directory(f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling"),
         # Key summary files for downstream use
         summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv",
-        emptydrops_summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/emptydrops_summary.tsv"
+        cell_calling_summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/cell_calling_summary.tsv"
     log:
         f"{LOGS}/cell_calling_{{sample_id}}_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -494,7 +494,8 @@ rule cell_calling_analysis:
         mem_mb=config["resources"]["analysis"]["mem_mb"],  # For large matrices with EmptyDrops
     shell:
         """
-        ml R/4.4
+        # ml R/4.4  # R is now installed in the kb conda environment via bioconda::bioconductor-dropletutils
+        # Rscript is called with --vanilla flag in the Python script to ensure only conda packages are used
         
         python3 {input.script} \
             --h5ad_file {input.h5ad} \
@@ -952,7 +953,7 @@ rule generate_qc_report:
             --sample-info {input.sample_info} \
             --dashboard-script {input.dashboard_script} \
             --output-archive {RESULTS}/qc_dashboard_{params.timestamp}.tar.gz \
-            --per-cell-method-filter EmptyDrops_FDR001 \
+            --per-cell-method-filter {config[cell_calling][default_method]} \
             --guide-cutoff-filter 1,2 \
             --threads {threads} &> {log}
         
@@ -986,4 +987,64 @@ rule calculate_pool_statistics:
             --sample-counts {input.sample_counts} \
             --undetermined-counts {input.undetermined_counts} \
             --output {output.stats} &> {log}
+        """
+
+rule create_analysis_ready:
+    """Create analysis-ready GEX and guide files with cell calling filtering
+    
+    WARNING: THIS RULE IS IN DEVELOPMENT AND NOT READY FOR USE
+    The combine_sublibs_analysis_ready.py script and related functionality 
+    are still being tested and may not work correctly. Do not use this rule
+    for production analysis yet.
+    """
+    input:
+        # Ensure cell calling is complete for all GEX samples
+        cell_calling_results=lambda wildcards: [
+            f"{RESULTS}/{row['pool']}/{row['sample_id']}/cell_calling/results.tsv"
+            for _, row in load_sample_info(config).iterrows()
+            if row['sample_type'] == 'gex'
+        ],
+        # Ensure kallisto alignment is complete for all samples  
+        gex_h5ad=lambda wildcards: [
+            f"{SCRATCH}/{row['sample_id']}/kb_all_all_merged/counts_unfiltered/adata.h5ad"
+            for _, row in load_sample_info(config).iterrows()
+            if row['sample_type'] == 'gex'
+        ],
+        guide_h5ad=lambda wildcards: [
+            f"{SCRATCH}/{row['sample_id']}/kb_guide_all_merged/counts_unfiltered/adata.h5ad"
+            for _, row in load_sample_info(config).iterrows()
+            if row['sample_type'] == 'guide'
+        ],
+        script="scripts/combine_sublibs_analysis_ready.py",
+        config="config.yaml"
+    output:
+        gex=f"{RESULTS}/{config['analysis_ready']['output_dir']}/gex_all.h5ad",
+        guide=f"{RESULTS}/{config['analysis_ready']['output_dir']}/guide_all.h5ad",
+        metadata=f"{RESULTS}/{config['analysis_ready']['output_dir']}/guide_all.tsv"
+    params:
+        cell_calling_method=config['analysis_ready']['cell_calling_method'],
+        pools=" ".join(config['analysis_ready']['pools']) if config['analysis_ready']['pools'] else ""
+    log:
+        f"{LOGS}/create_analysis_ready.log"
+    threads: 4
+    resources:
+        mem_mb=config["resources"]["analysis"]["mem_mb"]
+    shell:
+        """
+        if [ -z "{params.pools}" ]; then
+            python {input.script} \
+                --config {input.config} \
+                --gex-output {output.gex} \
+                --guide-output {output.guide} \
+                --cell-calling-method {params.cell_calling_method} \
+                &> {log}
+        else
+            python {input.script} \
+                --config {input.config} \
+                --gex-output {output.gex} \
+                --guide-output {output.guide} \
+                --cell-calling-method {params.cell_calling_method} \
+                --pools {params.pools} \
+                &> {log}
+        fi
         """

@@ -175,10 +175,7 @@ def calculate_statistics(kb_dir, sample_id=None, config_file=None, cell_barcodes
         if not os.path.exists(sample_info_file):
             raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
             
-        if sample_info_file.endswith('.xlsx'):
-            sample_df = pd.read_excel(sample_info_file)
-        else:
-            sample_df = pd.read_csv(sample_info_file, sep='\t')
+        sample_df = pd.read_excel(sample_info_file)
         
         sample_row = sample_df[sample_df['sample_id'] == sample_id]
         if sample_row.empty:

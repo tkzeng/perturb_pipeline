@@ -113,11 +113,8 @@ def load_sample_info(config):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    # Read the specified tab/sheet from the Excel file - no default
-    if "sample_info_tab" not in config:
-        raise ValueError("sample_info_tab must be specified in config.yaml")
-    sheet_name = config["sample_info_tab"]
-    df = pd.read_excel(sample_info_file, sheet_name=sheet_name)
+    # Read the first sheet of the Excel file
+    df = pd.read_excel(sample_info_file)
     
     # Filter out 'other' samples - we don't process these
     df = df[df['sample_type'].isin(['gex', 'guide'])]

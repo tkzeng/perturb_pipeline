@@ -234,7 +234,20 @@ def calculate_guide_metrics_for_barcodes(adata, barcode_set, guide_to_genes=None
         barcode_list = []
     
     if len(barcode_list) == 0:
-        raise ValueError("No barcodes provided to calculate_guide_metrics_for_barcodes")
+        # Return empty metrics when no barcodes are available
+        metrics = {
+            'guide_umis_per_cell': 0
+        }
+        # Add metrics for each cutoff matching the expected format
+        if cutoffs:
+            for cutoff in cutoffs:
+                metrics[f'guides_per_cell_cutoff{cutoff}'] = 0
+                metrics[f'fraction_cells_with_guides_cutoff{cutoff}'] = 0.0
+                metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = 0
+                metrics[f'total_guides_detected_cutoff{cutoff}'] = 0
+                metrics[f'total_guide_detections_cutoff{cutoff}'] = 0
+                metrics[f'total_targeted_genes_cutoff{cutoff}'] = 0
+        return metrics
     
     # Extract guide data from adata
     # Create a temporary AnnData with just guide counts
@@ -328,8 +341,9 @@ def calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, g
         # Only meaningful for Overall
         if group_name == 'Overall':
             if cell_metrics['total_umis'] == 0:
-                raise ValueError("No UMIs found in cells for reads per UMI calculation")
-            reads_per_umi = total_reads / cell_metrics['total_umis']
+                reads_per_umi = 0.0  # No UMIs found, set to 0
+            else:
+                reads_per_umi = total_reads / cell_metrics['total_umis']
         
         # Add all metrics directly to results
         

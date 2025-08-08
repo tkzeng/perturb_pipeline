@@ -26,9 +26,9 @@ def load_cell_calling_results(cell_calling_dir, sample_id):
     summary_file = results_dir / "results.tsv"
     summary_df = pd.read_csv(summary_file, sep='\\t')
     
-    # Load EmptyDrops detailed results
-    emptydrops_file = results_dir / "emptydrops_results.tsv"
-    emptydrops_df = pd.read_csv(emptydrops_file, sep='\\t')
+    # Load DropletUtils detailed results (includes both EmptyDrops and BarcodeRanks)
+    dropletutils_file = results_dir / "dropletutils_results.tsv"
+    dropletutils_df = pd.read_csv(dropletutils_file, sep='\\t')
     
     # Reconstruct methods_results dictionary
     methods_results = {}
@@ -48,7 +48,7 @@ def load_cell_calling_results(cell_calling_dir, sample_id):
             'umis_in_cells_pct': row['umis_in_cells_pct']
         }
     
-    return methods_results, emptydrops_df
+    return methods_results, dropletutils_df
 
 
 def load_read_statistics(read_stats_file):
@@ -241,7 +241,7 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
     return str(full_plot_path)
 
 
-def create_cell_calling_summary_plot(adata, methods_results, emptydrops_df, sample_id, 
+def create_cell_calling_summary_plot(adata, methods_results, dropletutils_df, sample_id, 
                                     output_dir, plot_dir, pool, source, processing, read_stats=None):
     """Create cell calling summary plots (comparisons and statistics)."""
     # Calculate total UMIs per barcode
@@ -386,7 +386,7 @@ def main():
     
     # Load cell calling results
     print(f"Loading cell calling results from: {args.cell_calling_dir}")
-    methods_results, emptydrops_df = load_cell_calling_results(args.cell_calling_dir, args.sample_id)
+    methods_results, dropletutils_df = load_cell_calling_results(args.cell_calling_dir, args.sample_id)
     print(f"Loaded results for {len(methods_results)} methods")
     
     # Load read statistics
@@ -417,7 +417,7 @@ def main():
     # Generate the summary plots
     print("Generating cell calling summary plots...")
     summary_path = create_cell_calling_summary_plot(
-        adata, methods_results, emptydrops_df, args.sample_id,
+        adata, methods_results, dropletutils_df, args.sample_id,
         args.cell_calling_dir, args.plot_dir, 
         pool, args.source, args.processing, read_stats
     )

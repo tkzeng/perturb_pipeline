@@ -282,11 +282,13 @@ def get_paired_sample(sample_id, sample_type, sample_info_file):
         raise ValueError(f"Invalid sample_type: {sample_type}. Must be 'gex' or 'guide'")
 
 
-def process_single_library(lib_name, nascent=False):
+def process_single_library(lib_name, config, cell_calling_method='Expected_Cells'):
     """
-    Process a single GEX library and return adata object.
-    Adapted for main pipeline structure using Snakemake output paths.
-
+    Process a single GEX library and return adata object with cell calling filtering.
+    
+    WARNING: THIS FUNCTION IS IN DEVELOPMENT AND NOT READY FOR PRODUCTION USE
+    This functionality is still being tested and may not work correctly.
+    
     CELL INDEX TRANSFORMATION:
     Input: Pure barcodes from kallisto (e.g., "AAACATCGAAACATCGAAACGATA")
     Output: Library-prefixed format (e.g., "gex1_AAACATCGAAACATCGAAACGATA")
@@ -294,13 +296,20 @@ def process_single_library(lib_name, nascent=False):
 
     Args:
         lib_name: GEX library name (e.g., "gex_1")
-        nascent: If True, use nascent-specific directories (if available);
-                 If False, use standard directories and apply filtering
+        config: Pipeline configuration dictionary
+        cell_calling_method: Which cell calling method to use:
+            - 'Expected_Cells': Top N cells by UMI count
+            - 'UMI_Threshold': Simple UMI threshold
+            - 'EmptyDrops_FDR0001': EmptyDrops with FDR 0.001
+            - 'EmptyDrops_FDR001': EmptyDrops with FDR 0.01
+            - 'EmptyDrops_FDR005': EmptyDrops with FDR 0.05
+            - 'BarcodeRanks_Knee': Knee point method
+            - 'BarcodeRanks_Inflection': Inflection point method
 
     Returns:
         adata object with GEX expression data and library-prefixed cell indices
     """
-    log_print(f"Processing {lib_name}...", flush=True)
+    log_print(f"Processing {lib_name} with cell calling method: {cell_calling_method}...", flush=True)
 
     # Get pool and mapping info for this sample
     try:
@@ -309,40 +318,51 @@ def process_single_library(lib_name, nascent=False):
     except Exception as e:
         raise RuntimeError(f"Critical error: Could not load sample info for {lib_name}: {e}. Sample info is required for proper file path resolution.") from e
 
-    # TODO: Remove hardcoded paths - these should come from config YAML
-    # These hardcoded paths are only used by combine scripts which are currently unused
-    # Determine directory path based on main pipeline structure
-    if nascent:
-        # Look for nascent-specific directories (may not exist in main pipeline)
-        fdir_options = [
-            f"../analysis_results/{pool_name}/{lib_name}/kb_nascent/counts_unfiltered/",
-            f"../analysis_results/{pool_name}/{lib_name}/kb_all_nascent/counts_unfiltered/",
+    # Get paths from config
+    scratch_base = os.environ.get('SCRATCH', '/scratch')
+    analysis_name = config.get('analysis_name', 'analysis')
+    scratch = os.path.join(scratch_base, analysis_name)
+    results = config['output_paths']['results_base']
+    
+    # Build path to h5ad file from kallisto output
+    # Using the all_merged combination which includes all sources
+    h5ad_path = os.path.join(scratch, lib_name, "kb_all_all_merged", "counts_unfiltered", "adata.h5ad")
+    
+    if not Path(h5ad_path).exists():
+        # Fallback to other possible paths
+        alt_paths = [
+            os.path.join(results, pool_name, lib_name, "kb_all", "counts_unfiltered", "adata.h5ad"),
+            os.path.join(scratch, lib_name, "kb_all_main_raw", "counts_unfiltered", "adata.h5ad"),
         ]
-        do_filtering = False
-        log_print(f"  📁 Attempting nascent data directories")
-    else:
-        # Main pipeline standard structure
-        fdir_options = [
-            f"../analysis_results/{pool_name}/{lib_name}/kb_all/counts_unfiltered/",
-        ]
-        do_filtering = True
-        log_print(f"  📁 Using total data directories")
-
-    # Try each directory option until we find one with adata.h5ad
-    fdir = None
-    for option in fdir_options:
-        if Path(f"{option}/adata.h5ad").exists():
-            fdir = option
-            break
-
-    if fdir is None:
-        raise FileNotFoundError(f"No valid directory found for {lib_name}. Tried: {fdir_options}")
-
-    log_print(f"  📁 Loading from: {fdir}")
-
+        for alt_path in alt_paths:
+            if Path(alt_path).exists():
+                h5ad_path = alt_path
+                break
+        else:
+            raise FileNotFoundError(f"No h5ad file found for {lib_name}. Tried: {h5ad_path} and alternatives")
+    
+    log_print(f"  📁 Loading from: {h5ad_path}")
+    
     # Load the pre-processed adata.h5ad file
-    adata = sc.read_h5ad(f"{fdir}/adata.h5ad")
-
+    adata = sc.read_h5ad(h5ad_path)
+    
+    # Load cell calling results for filtering
+    cell_calling_dir = os.path.join(results, pool_name, lib_name, "cell_calling")
+    cell_barcode_file = os.path.join(cell_calling_dir, f"{lib_name}_{cell_calling_method}_cell_barcodes.txt")
+    
+    # Filter to called cells if cell calling results exist
+    if Path(cell_barcode_file).exists():
+        log_print(f"  📊 Loading cell calling results from: {cell_barcode_file}")
+        with open(cell_barcode_file) as f:
+            called_cells = set(line.strip() for line in f)
+        
+        # Filter adata to called cells
+        original_cells = adata.shape[0]
+        adata = adata[adata.obs_names.isin(called_cells)]
+        log_print(f"  🧹 Filtered to {adata.shape[0]} called cells (from {original_cells} total)")
+    else:
+        log_print(f"  ⚠️ No cell calling results found for method {cell_calling_method}, using all cells")
+    
     # Add library identifier to cell names (lib_name_barcode format)
     adata.obs_names = [f"{lib_name}_{barcode}" for barcode in adata.obs_names]
 
@@ -394,40 +414,25 @@ def process_single_library(lib_name, nascent=False):
             if len(sample_counts) > 10:
                 log_print(f"    ... and {len(sample_counts) - 10} more samples")
 
-    if do_filtering:
-        # Apply cell filtering based on expected cell count (only for non-nascent)
-        exp_cells = get_expected_cells(lib_name)
+    # Add total counts if not present
+    if "total_counts" not in adata.obs.columns:
         counts = np.array(adata.X.sum(axis=1)).flatten()
         adata.obs["total_counts"] = counts
-
-        counts_sorted = sorted(counts)
-        thresh = counts_sorted[-exp_cells * 2] if len(counts_sorted) >= exp_cells * 2 else 0
-
-        log_print(f"  📊 Expected cells: {exp_cells}, threshold: {thresh}")
-        log_print(
-            f"  📊 Median counts in top {exp_cells} cells: {np.median(counts_sorted[-exp_cells:]) if len(counts_sorted) >= exp_cells else 'N/A'}"
-        )
-
-        # Filter cells by count threshold
-        original_cells = adata.shape[0]
-        adata = adata[adata.obs["total_counts"] >= thresh]
-        log_print(
-            f"  🧹 Kept {adata.shape[0]} cells after filtering (removed {original_cells - adata.shape[0]} cells)"
-        )
-    else:
-        log_print(f"  📋 Nascent mode: no filtering applied, keeping all {adata.shape[0]} cells")
-
-    # Add data type indicator
-    adata.obs["data_type"] = "nascent" if nascent else "total"
+    
+    # Add data type indicator (always total since we don't support nascent)
+    adata.obs["data_type"] = "total"
+    adata.obs["cell_calling_method"] = cell_calling_method
 
     log_print(f"  ✅ Successfully processed {lib_name}")
     return adata
 
 
-def process_guide_library(lib_name, guide_libs, target_cells):
+def process_guide_library(lib_name, config, target_cells):
     """Process a guide library and return guide count data filtered to target cells.
-    Adapted for main pipeline structure using Snakemake output paths.
-
+    
+    WARNING: THIS FUNCTION IS IN DEVELOPMENT AND NOT READY FOR PRODUCTION USE
+    This functionality is still being tested and may not work correctly.
+    
     CELL INDEX TRANSFORMATION:
     Input: Pure barcodes from kallisto (e.g., "AAACATCGAAACATCGCACAATTG") - SAME CELLS as GEX
     Output: Library-prefixed format (e.g., "guide_1_AAACATCGAAACATCGCACAATTG")
@@ -437,7 +442,7 @@ def process_guide_library(lib_name, guide_libs, target_cells):
 
     Args:
         lib_name: Guide library name (e.g., "guide_1")
-        guide_libs: Dictionary of guide library mappings {name: id}
+        config: Pipeline configuration dictionary
         target_cells: Set of target cell IDs to subset to (REQUIRED) - filtered GEX cells
     """
     log_print(f"Processing guide library {lib_name}...")
@@ -446,15 +451,32 @@ def process_guide_library(lib_name, guide_libs, target_cells):
     pool_name, mapping_name = get_sample_pool_and_mapping(lib_name)
     log_print(f"  📋 Found sample in pool: {pool_name}, mapping: {mapping_name}")
 
-    # TODO: Remove hardcoded path - should come from config YAML
-    # This hardcoded path is only used by combine scripts which are currently unused
-    # Guide libraries use kb_guide directory structure in main pipeline
-    fdir = f"../analysis_results/{pool_name}/{lib_name}/kb_guide/counts_unfiltered/"
+    # Get paths from config
+    scratch_base = os.environ.get('SCRATCH', '/scratch')
+    analysis_name = config.get('analysis_name', 'analysis')
+    scratch = os.path.join(scratch_base, analysis_name)
+    results = config['output_paths']['results_base']
+    
+    # Build path to guide h5ad file
+    h5ad_path = os.path.join(scratch, lib_name, "kb_guide_all_merged", "counts_unfiltered", "adata.h5ad")
+    
+    if not Path(h5ad_path).exists():
+        # Fallback to other possible paths
+        alt_paths = [
+            os.path.join(results, pool_name, lib_name, "kb_guide", "counts_unfiltered", "adata.h5ad"),
+            os.path.join(scratch, lib_name, "kb_guide_main_raw", "counts_unfiltered", "adata.h5ad"),
+        ]
+        for alt_path in alt_paths:
+            if Path(alt_path).exists():
+                h5ad_path = alt_path
+                break
+        else:
+            raise FileNotFoundError(f"No guide h5ad file found for {lib_name}")
 
-    log_print(f"  📁 Loading guide data from: {fdir}")
+    log_print(f"  📁 Loading guide data from: {h5ad_path}")
 
     # Load kb-bus files - let natural exceptions happen if files don't exist
-    adata = sc.read_h5ad(f"{fdir}/adata.h5ad")
+    adata = sc.read_h5ad(h5ad_path)
 
     # Add library identifier to cell names (lib_name_barcode format)
     adata.obs_names = [f"{lib_name}_{barcode}" for barcode in adata.obs_names]
@@ -467,7 +489,15 @@ def process_guide_library(lib_name, guide_libs, target_cells):
 
     # Standardize cell indices (same logic as GEX processing)
     adata.obs["barcode"] = adata.obs.index.map(lambda x: x.split("_")[-1])
-    standardized_lib_id = guide_libs[lib_name]  # Use mapping from guide_libs dict
+    
+    # Apply same standardization logic as GEX processing
+    if lib_name.startswith('guide_'):
+        standardized_lib_id = lib_name[6:]  # Remove 'guide_' prefix
+    elif lib_name.startswith('guide'):
+        standardized_lib_id = lib_name[5:]  # Remove 'guide' prefix
+    else:
+        raise ValueError(f"Invalid guide library name format: {lib_name}. Expected to start with 'guide_' or 'guide'")
+    
     adata.obs["standardized_lib_id"] = standardized_lib_id
     adata.obs.index = adata.obs["standardized_lib_id"] + "_" + adata.obs["barcode"]
     adata.obs = adata.obs.drop(columns="barcode")

@@ -6,12 +6,11 @@
 analysis_name: "yann_k562_analysis"  # Used for scratch subdirectory and organizing outputs
 
 # Sample information files (specific to this experiment)
-sample_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/k562_yann/sample_info.k562_yann.xlsx"
-sample_info_tab: "sample_info"  # Excel sheet name
-plate_maps_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/k562_yann/plate_map.xlsx"
+sample_info_file: "references_yann_k562/sample_info.k562_yann.xlsx"
+plate_maps_file: "references_yann_k562/plate_map.xlsx"
 
 # Guide library file (specific to this experiment)
-guide_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/k562_yann_guides.txt"
+guide_file: "references_yann_k562/k562_yann_guides.txt"
 
 # Output directories (specific to this analysis)
 output_paths:
@@ -42,7 +41,7 @@ input_paths:
   replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96.txt"
   barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96.txt"
   # Guide reference file for QC analysis - maps guide IDs to target genes
-  guide_reference: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/k562_yann_guides_qc_reference.txt"
+  guide_reference: "references_yann_k562/k562_yann_guides_qc_reference.txt"
   # ONLY NEEDED FOR UNDETERMINED READ RECOVERY - maps i5/i7 index sequences to sample names
   # If not doing undetermined read recovery (processing="raw" only), this file is not used
   primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
@@ -64,6 +63,23 @@ input_paths:
 
 # Cell calling parameters
 cell_calling:
+  # Methods to run (comment out any methods you want to skip)
+  # Available methods: Expected_Cells, UMI_Threshold, 
+  #                   EmptyDrops_FDR_X (where X is the FDR cutoff, e.g., EmptyDrops_FDR_0.001),
+  #                   BarcodeRanks_Knee, BarcodeRanks_Inflection
+  methods_to_run:
+    - Expected_Cells
+    - UMI_Threshold
+    # - EmptyDrops_FDR_0.001  # Commented out - too lenient for current data
+    # - EmptyDrops_FDR_0.01   # Commented out - too lenient for current data  
+    # - EmptyDrops_FDR_0.05   # Commented out - too lenient for current data
+    - BarcodeRanks_Knee
+    - BarcodeRanks_Inflection
+  
+  # Default method to use for saturation analysis and other downstream analyses
+  default_method: "Expected_Cells"
+  
+  # Default parameters (will be overridden by sample_info.tsv values)
   defaults:
     expected_cells: 5000
     min_umi_threshold: 100
@@ -123,3 +139,17 @@ combination:
       pools: []  # Empty = all pools
       name: "all_combined"
   combine_all_pools: true
+
+# Analysis-ready file configuration
+analysis_ready:
+  # Cell calling method to use for creating analysis-ready files
+  # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
+  #          BarcodeRanks_Knee, BarcodeRanks_Inflection
+  cell_calling_method: "Expected_Cells"
+  # Output directory for analysis-ready files (relative to results_base)
+  output_dir: "analysis_ready"
+  # Pools to include (empty list means all pools)
+  pools: []
+  # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
+  # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
+  min_umi_filter: 2

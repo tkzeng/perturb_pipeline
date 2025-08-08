@@ -1,0 +1,156 @@
+# ============================================================================
+# RUN-SPECIFIC CONFIGURATION (Change these for each analysis)
+# ============================================================================
+
+# Analysis identification
+analysis_name: "yann_k562_analysis_swap"  # Used for scratch subdirectory and organizing outputs
+
+# Sample information files (specific to this experiment)
+# NOTE: This config needs a separate Excel file with the swap data in the first sheet
+sample_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/k562_yann/sample_info.k562_yann_swap.xlsx"
+plate_maps_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/k562_yann/plate_map.xlsx"
+
+# Guide library file (specific to this experiment)
+guide_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/k562_yann_guides.txt"
+
+# Output directories (specific to this analysis)
+output_paths:
+  results_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/perturb_pipeline/results_yann_k562_swap"
+  logs_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/perturb_pipeline/logs_yann_k562_swap"
+
+# Sample selection (leave empty to process all samples in sample_info)
+sample_ids: []
+
+# Analysis parameters to adjust
+analysis:
+  combinations:  # Which source/processing combinations to run
+    - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
+  threads: 24  # Number of threads for compute-intensive steps
+  strand: "forward"  # Options: "forward" or "unstranded"
+  # Technical parameters (rarely changed)
+  genome_types: ["all"]
+  index_prefix: "nascent"
+  kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
+
+# ============================================================================
+# STABLE INFRASTRUCTURE (Usually don't change between runs)
+# ============================================================================
+
+# Parse Bio kit configuration (stable across experiments)
+input_paths:
+  # Parse Bio barcode files
+  replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96.txt"
+  barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96.txt"
+  # Guide reference file for QC analysis - maps guide IDs to target genes
+  guide_reference: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides/k562_yann_guides_qc_reference.txt"
+  # ONLY NEEDED FOR UNDETERMINED READ RECOVERY - maps i5/i7 index sequences to sample names
+  # If not doing undetermined read recovery (processing="raw" only), this file is not used
+  primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
+  
+  # Gene annotation reference files
+  ribosomal_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ribosomal.txt"
+  cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
+  gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
+  
+  # Parse Bio barcode CSV files for well mapping validation
+  parsebio_96_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_n198_v5.csv"
+  parsebio_48_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_v2.csv"
+  
+  # Reference genome/index locations
+  reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
+  nascent_genome: "nascent_all"  # Subdirectory with genome index files
+  
+
+
+# Cell calling parameters
+cell_calling:
+  # Methods to run (comment out any methods you want to skip)
+  # Available methods: Expected_Cells, UMI_Threshold, 
+  #                   EmptyDrops_FDR_X (where X is the FDR cutoff, e.g., EmptyDrops_FDR_0.001),
+  #                   BarcodeRanks_Knee, BarcodeRanks_Inflection
+  methods_to_run:
+    - Expected_Cells
+    - UMI_Threshold
+    # - EmptyDrops_FDR_0.001  # Commented out - too lenient for current data
+    # - EmptyDrops_FDR_0.01   # Commented out - too lenient for current data  
+    # - EmptyDrops_FDR_0.05   # Commented out - too lenient for current data
+    - BarcodeRanks_Knee
+    - BarcodeRanks_Inflection
+  
+  # Default method to use for saturation analysis and other downstream analyses
+  default_method: "Expected_Cells"
+  
+  # Default parameters (will be overridden by sample_info.tsv values)
+  defaults:
+    expected_cells: 5000
+    min_umi_threshold: 100
+    emptydrops_lower: 100
+    saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+# Barcode recovery parameters
+barcode_recovery:
+  max_reads_recovery: null  # null = process all reads
+  max_shift: 4
+
+# Undetermined recovery parameters
+undetermined_recovery:
+  max_open_files: 5000
+
+# QC analysis parameters
+qc_analysis:
+  guide_cutoffs: [1, 2, 3, 4, 5]
+
+# Sublibrary filtering parameters
+sublibrary_filtering:
+  guide_assignment_cutoff: 5
+  skip_barcode_filtering: true
+  min_umi_filter: 2
+
+# Cell quality filtering thresholds
+# NOTE: These are currently UNUSED in the pipeline - apply_cell_filters() is never called
+# TODO: Remove or implement cell filtering in the pipeline
+# cell_filtering:
+#   max_total_counts: 40000
+#   max_mt_percent: 20
+#   min_genes: 1000
+#   default_min_counts: 2000
+
+# Resource allocation for different rule groups
+# Adjust these based on your dataset size and cluster capabilities
+resources:
+  # Heavy compute rules (kallisto alignment)
+  alignment:
+    mem_mb: 128000  # 128GB
+    threads: 24
+  
+  # Heavy memory rules (matrix operations, cell calling)
+  analysis:
+    mem_mb: 256000  # 256GB
+    threads: 2
+  
+  # Light rules (QC, stats, file operations)
+  light:
+    mem_mb: 32000   # 32GB
+    threads: 4
+
+# Sublibrary combination configuration
+combination:
+  groups:
+    all_pools:
+      pools: []  # Empty = all pools
+      name: "all_combined"
+  combine_all_pools: true
+
+# Analysis-ready file configuration
+analysis_ready:
+  # Cell calling method to use for creating analysis-ready files
+  # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
+  #          BarcodeRanks_Knee, BarcodeRanks_Inflection
+  cell_calling_method: "Expected_Cells"
+  # Output directory for analysis-ready files (relative to results_base)
+  output_dir: "analysis_ready"
+  # Pools to include (empty list means all pools)
+  pools: []
+  # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
+  # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
+  min_umi_filter: 2

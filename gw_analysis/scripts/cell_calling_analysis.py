@@ -41,23 +41,33 @@ def load_h5ad_matrix(h5ad_file):
     
     return adata
 
-def run_emptydrops_r(kb_dir, sample_id, output_dir, emptydrops_lower=100, ncores=4):
-    """Run R script for emptyDrops analysis."""
+def run_dropletutils_r(kb_dir, sample_id, output_dir, emptydrops_lower=100, ncores=4, expected_cells=0, 
+                      run_emptydrops=False, run_barcoderanks=False, fdr_cutoffs=None):
+    """Run R script for DropletUtils analysis (EmptyDrops and/or BarcodeRanks)."""
     # Get the path to the R script relative to this Python script
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    r_script_path = os.path.join(script_dir, "emptydrops_r.R")
+    r_script_path = os.path.join(script_dir, "dropletutils_r.R")
     
     cmd = [
-        "Rscript", r_script_path,
+        "Rscript", "--vanilla", r_script_path,  # Use --vanilla to ensure only conda R packages are used
         "--kb_dir", str(kb_dir),
         "--sample_id", sample_id,
         "--output_dir", str(output_dir),
         "--emptydrops_lower", str(emptydrops_lower),
-        "--ncores", str(ncores)
+        "--ncores", str(ncores),
+        "--expected_cells", str(expected_cells)
     ]
     
+    if run_emptydrops:
+        cmd.append("--run_emptydrops")
+        if fdr_cutoffs:
+            # Pass FDR cutoffs as comma-separated string
+            cmd.extend(["--fdr_cutoffs", ",".join(map(str, fdr_cutoffs))])
+    if run_barcoderanks:
+        cmd.append("--run_barcoderanks")
+    
     result = subprocess.run(cmd, check=True)
-    print(f"EmptyDrops R script completed successfully")
+    print(f"DropletUtils R script completed successfully")
 
 def expected_cell_method(adata, expected_cells):
     """Cell calling using expected cell count - take top N barcodes."""
@@ -91,7 +101,7 @@ def threshold_method(adata, min_umi_threshold):
 def load_dropletutils_results(output_dir, sample_id, adata):
     """Load DropletUtils results from R script output (EmptyDrops + barcodeRanks)."""
     # Load DropletUtils results
-    results_file = Path(output_dir) / "emptydrops_results.tsv"
+    results_file = Path(output_dir) / "dropletutils_results.tsv"
     df = pd.read_csv(results_file, sep='\t')
     
     # Map back to adata
@@ -100,21 +110,30 @@ def load_dropletutils_results(output_dir, sample_id, adata):
     # Load results for all methods
     results = {}
     
-    # 1. EmptyDrops with different FDR thresholds
-    for fdr_threshold, suffix in [(0.001, 'FDR0001'), (0.01, 'FDR001'), (0.05, 'FDR005')]:
-        is_cell = np.zeros(adata.n_obs, dtype=bool)
+    # 1. Load EmptyDrops results from summary file to get actual FDR thresholds tested
+    summary_file = Path(output_dir) / "cell_calling_summary.tsv"
+    if summary_file.exists():
+        summary_df = pd.read_csv(summary_file, sep='\t')
         
-        # Get cells below FDR threshold
-        cells_df = df[df['fdr'] <= fdr_threshold]
-        for barcode in cells_df['barcode']:
-            if barcode in barcode_to_idx:
-                is_cell[barcode_to_idx[barcode]] = True
-        
-        results[f'EmptyDrops_{suffix}'] = (is_cell, fdr_threshold)
+        # Process EmptyDrops results for each FDR threshold
+        emptydrops_rows = summary_df[summary_df['method'].str.startswith('EmptyDrops_FDR')]
+        for _, row in emptydrops_rows.iterrows():
+            method_name = row['method']
+            fdr_threshold = row['fdr_threshold']
+            
+            is_cell = np.zeros(adata.n_obs, dtype=bool)
+            
+            # Get cells below FDR threshold
+            cells_df = df[df['fdr'] <= fdr_threshold]
+            for barcode in cells_df['barcode']:
+                if barcode in barcode_to_idx:
+                    is_cell[barcode_to_idx[barcode]] = True
+            
+            results[method_name] = (is_cell, fdr_threshold)
     
     # 2. BarcodeRanks knee and inflection points
     # The R script saves a summary file with these values
-    summary_file = Path(output_dir) / "emptydrops_summary.tsv"
+    summary_file = Path(output_dir) / "cell_calling_summary.tsv"
     if summary_file.exists():
         summary_df = pd.read_csv(summary_file, sep='\t')
         
@@ -170,12 +189,7 @@ def get_cell_calling_params(config, sample_id):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    if sample_info_file.endswith('.xlsx'):
-        sample_df = pd.read_excel(sample_info_file)
-    elif sample_info_file.endswith('.tsv'):
-        sample_df = pd.read_csv(sample_info_file, sep='\t')
-    else:
-        raise ValueError(f"Unsupported file format: {sample_info_file}. Only .xlsx and .tsv files are supported.")
+    sample_df = pd.read_excel(sample_info_file)
     
     sample_row = sample_df[sample_df['sample_id'] == sample_id]
     if sample_row.empty:
@@ -231,22 +245,55 @@ def main():
     # Apply different cell calling methods
     methods_results = {}
     
+    # Get list of methods to run from config
+    methods_to_run = config['cell_calling']['methods_to_run']
+    print(f"Running cell calling methods: {methods_to_run}")
+    
     # Method 1: Expected cell count
-    print(f"Running expected cell method (n={params['expected_cells']})...")
-    methods_results['Expected_Cells'] = expected_cell_method(adata, params['expected_cells'])
+    if 'Expected_Cells' in methods_to_run:
+        print(f"Running expected cell method (n={params['expected_cells']})...")
+        methods_results['Expected_Cells'] = expected_cell_method(adata, params['expected_cells'])
     
     # Method 2: Threshold method
-    print(f"Running threshold method (min_umi={params['min_umi_threshold']})...")
-    methods_results['UMI_Threshold'] = threshold_method(adata, params['min_umi_threshold'])
+    if 'UMI_Threshold' in methods_to_run:
+        print(f"Running threshold method (min_umi={params['min_umi_threshold']})...")
+        methods_results['UMI_Threshold'] = threshold_method(adata, params['min_umi_threshold'])
     
     # Method 3-7: DropletUtils methods (via R)
-    print("Running DropletUtils analysis (EmptyDrops + barcodeRanks) on pre-filtered matrix...")
-    run_emptydrops_r(args.kb_dir, args.sample_id, output_dir, 
-                     params.get('emptydrops_lower', 100), 
-                     args.ncores)
+    # Parse EmptyDrops methods and their FDR cutoffs
+    emptydrops_fdr_cutoffs = []
+    for method in methods_to_run:
+        if method.startswith('EmptyDrops_FDR_'):
+            # Parse FDR value from method name (e.g., EmptyDrops_FDR_0.001 -> 0.001)
+            fdr_str = method.replace('EmptyDrops_FDR_', '')
+            fdr_value = float(fdr_str)
+            emptydrops_fdr_cutoffs.append(fdr_value)
     
-    dropletutils_results = load_dropletutils_results(output_dir, args.sample_id, adata)
-    methods_results.update(dropletutils_results)
+    barcoderanks_methods = ['BarcodeRanks_Knee', 'BarcodeRanks_Inflection']
+    
+    run_emptydrops = len(emptydrops_fdr_cutoffs) > 0
+    run_barcoderanks = any(method in methods_to_run for method in barcoderanks_methods)
+    
+    if run_emptydrops or run_barcoderanks:
+        print("Running DropletUtils analysis on pre-filtered matrix...")
+        if run_emptydrops:
+            print(f"  - EmptyDrops enabled with FDR cutoffs: {emptydrops_fdr_cutoffs}")
+        if run_barcoderanks:
+            print("  - BarcodeRanks enabled")
+            
+        run_dropletutils_r(args.kb_dir, args.sample_id, output_dir, 
+                          params['emptydrops_lower'], 
+                          args.ncores,
+                          params['expected_cells'],
+                          run_emptydrops=run_emptydrops,
+                          run_barcoderanks=run_barcoderanks,
+                          fdr_cutoffs=emptydrops_fdr_cutoffs if run_emptydrops else None)
+        
+        dropletutils_results = load_dropletutils_results(output_dir, args.sample_id, adata)
+        # Only include methods that were requested
+        for method in methods_to_run:
+            if method in dropletutils_results:
+                methods_results[method] = dropletutils_results[method]
     
     # Calculate percentage of UMIs in cells
     umi_percentages = calculate_umis_in_cells_pct(adata, methods_results)

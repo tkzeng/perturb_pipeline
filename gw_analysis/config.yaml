@@ -5,7 +5,6 @@ analysis_name: "gw_analysis"
 
 # Sample information file
 sample_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/sample_info.xlsx"
-sample_info_tab: "sample_info"  # Specify which tab/sheet to read from the Excel file
 plate_maps_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/plate_maps.xlsx"  # Plate well-to-sample mappings
 
 # Sample IDs - will be automatically discovered from sample_info.xlsx
@@ -60,6 +59,22 @@ analysis:
   
 # Cell calling parameters
 cell_calling:
+  # Methods to run (comment out any methods you want to skip)
+  # Available methods: Expected_Cells, UMI_Threshold, 
+  #                   EmptyDrops_FDR_X (where X is the FDR cutoff, e.g., EmptyDrops_FDR_0.001),
+  #                   BarcodeRanks_Knee, BarcodeRanks_Inflection
+  methods_to_run:
+    - Expected_Cells
+    - UMI_Threshold
+    # - EmptyDrops_FDR_0.001  # Commented out - too lenient for current data
+    # - EmptyDrops_FDR_0.01   # Commented out - too lenient for current data  
+    # - EmptyDrops_FDR_0.05   # Commented out - too lenient for current data
+    - BarcodeRanks_Knee
+    - BarcodeRanks_Inflection
+  
+  # Default method to use for saturation analysis and other downstream analyses
+  default_method: "BarcodeRanks_Knee"  # Changed from hardcoded EmptyDrops_FDR001
+  
   # Default parameters (will be overridden by sample_info.tsv values)
   defaults:
     expected_cells: 5000
@@ -113,6 +128,19 @@ sublibrary_filtering:
   guide_assignment_cutoff: 5
   # Skip barcode filtering to keep all barcodes (recommended for proper cell calling)
   skip_barcode_filtering: true
+
+# Analysis-ready file configuration
+# WARNING: THIS FEATURE IS IN DEVELOPMENT AND NOT READY FOR USE
+# The analysis-ready functionality is still being tested and may not work correctly
+analysis_ready:
+  # Cell calling method to use for creating analysis-ready files
+  # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
+  #          BarcodeRanks_Knee, BarcodeRanks_Inflection
+  cell_calling_method: "BarcodeRanks_Knee"
+  # Output directory for analysis-ready files (relative to results_base)
+  output_dir: "analysis_ready"
+  # Pools to include (empty list means all pools)
+  pools: []
   # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
   # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
   min_umi_filter: 2

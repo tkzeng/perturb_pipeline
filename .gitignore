@@ -9,6 +9,12 @@ gw_analysis/scripts/UNUSED/
 gw_analysis/misc/
 gw_analysis/.snakemake/
 
+# Results and logs directories
+results_*/
+logs_*/
+*_results/
+*_logs/
+
 # External software/repos
 gw_analysis/bustools/
 gw_analysis/kb_python/

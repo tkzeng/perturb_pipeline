@@ -262,7 +262,7 @@ def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_
     
     return saturation_data
 
-def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_methods=None, is_guide=False, guide_cutoffs=None, pool=None, total_reads=None):
+def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config, cell_methods=None, is_guide=False, guide_cutoffs=None, pool=None, total_reads=None):
     """Generate UMI saturation plots.
     
     Returns:
@@ -289,34 +289,37 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_me
     else:
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     
+    # Calculate actual read counts from subsample fractions
+    df['num_reads'] = df['subsample_fraction'] * total_reads
+    x_data = df['num_reads'] / 1e6  # Convert to millions
+    x_label = 'Number of Reads (millions)'
+    
     # UMI saturation curve
-    axes[0, 0].plot(df['subsample_fraction'], df['total_umis'], 'bo-')
-    axes[0, 0].set_xlabel('Subsample Fraction')
+    axes[0, 0].plot(x_data, df['total_umis'], 'bo-')
+    axes[0, 0].set_xlabel(x_label)
     axes[0, 0].set_ylabel('Total UMIs')
     title = f'{feature_type_cap} UMI Saturation Curve'
-    if total_reads:
-        title += f'\nTotal Reads at 100%: {total_reads:,}'
     axes[0, 0].set_title(title)
     axes[0, 0].grid(True, alpha=0.3)
     
     # Active barcodes saturation
-    axes[0, 1].plot(df['subsample_fraction'], df['barcodes_with_umis'], 'ro-')
-    axes[0, 1].set_xlabel('Subsample Fraction')
+    axes[0, 1].plot(x_data, df['barcodes_with_umis'], 'ro-')
+    axes[0, 1].set_xlabel(x_label)
     axes[0, 1].set_ylabel('Barcodes with UMIs')
     axes[0, 1].set_title('Active Barcodes Saturation')
     axes[0, 1].grid(True, alpha=0.3)
     
     # Mean UMIs per barcode
-    axes[1, 0].plot(df['subsample_fraction'], df['mean_umis_per_barcode'], 'go-')
-    axes[1, 0].set_xlabel('Subsample Fraction')
+    axes[1, 0].plot(x_data, df['mean_umis_per_barcode'], 'go-')
+    axes[1, 0].set_xlabel(x_label)
     axes[1, 0].set_ylabel('Mean UMIs per Barcode')
     axes[1, 0].set_title('Mean UMIs per Barcode')
     axes[1, 0].grid(True, alpha=0.3)
     
     # Mean features per barcode
     feature_col = f'mean_{feature_type}_per_barcode'
-    axes[1, 1].plot(df['subsample_fraction'], df[feature_col], 'mo-')
-    axes[1, 1].set_xlabel('Subsample Fraction')
+    axes[1, 1].plot(x_data, df[feature_col], 'mo-')
+    axes[1, 1].set_xlabel(x_label)
     axes[1, 1].set_ylabel(f'Mean {feature_type_cap}s per Barcode')
     axes[1, 1].set_title(f'Mean {feature_type_cap}s per Barcode')
     axes[1, 1].grid(True, alpha=0.3)
@@ -330,10 +333,10 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_me
         for i, method in enumerate(cell_methods):
             mean_umis_col = f'{method}_mean_umis_per_cell'
             if mean_umis_col in df.columns:
-                axes[2, 0].plot(df['subsample_fraction'], df[mean_umis_col], 
+                axes[2, 0].plot(x_data, df[mean_umis_col], 
                                'o-', color=colors[i], label=method)
         
-        axes[2, 0].set_xlabel('Subsample Fraction')
+        axes[2, 0].set_xlabel(x_label)
         axes[2, 0].set_ylabel('Mean UMIs per Cell')
         axes[2, 0].set_title(f'Mean {feature_type_cap} UMIs per Cell by Method')
         axes[2, 0].grid(True, alpha=0.3)
@@ -344,10 +347,10 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_me
             for i, method in enumerate(cell_methods):
                 mean_genes_col = f'{method}_mean_{feature_type}_per_cell'
                 if mean_genes_col in df.columns:
-                    axes[2, 1].plot(df['subsample_fraction'], df[mean_genes_col], 
+                    axes[2, 1].plot(x_data, df[mean_genes_col], 
                                    'o-', color=colors[i], label=method)
             
-            axes[2, 1].set_xlabel('Subsample Fraction')
+            axes[2, 1].set_xlabel(x_label)
             axes[2, 1].set_ylabel(f'Mean {feature_type_cap}s per Cell')
             axes[2, 1].set_title(f'Mean {feature_type_cap}s per Cell by Method')
             axes[2, 1].grid(True, alpha=0.3)
@@ -357,10 +360,10 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_me
             for i, method in enumerate(cell_methods):
                 mean_guides_col = f'{method}_mean_guides_per_cell_cutoff1'
                 if mean_guides_col in df.columns:
-                    axes[2, 1].plot(df['subsample_fraction'], df[mean_guides_col], 
+                    axes[2, 1].plot(x_data, df[mean_guides_col], 
                                    'o-', color=colors[i], label=method)
             
-            axes[2, 1].set_xlabel('Subsample Fraction')
+            axes[2, 1].set_xlabel(x_label)
             axes[2, 1].set_ylabel('Mean Guides per Cell')
             axes[2, 1].set_title('Mean Guides per Cell by Method (Cutoff = 1 UMI)')
             axes[2, 1].grid(True, alpha=0.3)
@@ -372,10 +375,10 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_me
             for i, method in enumerate(cell_methods):
                 mean_guides_col = f'{method}_mean_guides_per_cell_cutoff2'
                 if mean_guides_col in df.columns:
-                    axes[3, 0].plot(df['subsample_fraction'], df[mean_guides_col], 
+                    axes[3, 0].plot(x_data, df[mean_guides_col], 
                                    'o-', color=colors[i], label=method)
             
-            axes[3, 0].set_xlabel('Subsample Fraction')
+            axes[3, 0].set_xlabel(x_label)
             axes[3, 0].set_ylabel('Mean Guides per Cell')
             axes[3, 0].set_title('Mean Guides per Cell by Method (Cutoff = 2 UMIs)')
             axes[3, 0].grid(True, alpha=0.3)
@@ -388,35 +391,35 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, cell_me
             if guide_cutoffs is None:
                 raise ValueError("Guide cutoffs must be provided for guide plots")
             
-            # Use EmptyDrops_FDR001 method specifically for single-method plots
-            single_method = 'EmptyDrops_FDR001'
+            # Use default method from config for single-method plots
+            single_method = config['cell_calling']['default_method']
             if single_method not in cell_methods:
                 raise ValueError(f"Required method {single_method} not found in cell calling results. Available methods: {cell_methods}")
             
             for j, cutoff in enumerate(guide_cutoffs):
                 col_name = f'{single_method}_mean_guides_per_cell_cutoff{cutoff}'
                 if col_name in df.columns:
-                    axes[4, 0].plot(df['subsample_fraction'], df[col_name], 
+                    axes[4, 0].plot(x_data, df[col_name], 
                                    'o-', color=cutoff_colors[j % len(cutoff_colors)], label=f'Cutoff {cutoff}')
             
-            axes[4, 0].set_xlabel('Subsample Fraction')
+            axes[4, 0].set_xlabel(x_label)
             axes[4, 0].set_ylabel('Mean Guides per Cell')
             axes[4, 0].set_title(f'Guide Detection Saturation by Cutoff ({single_method})')
             axes[4, 0].grid(True, alpha=0.3)
             axes[4, 0].legend()
             
             # Fraction of cells with guides at different cutoffs
-            method = 'EmptyDrops_FDR001'
+            method = config['cell_calling']['default_method']
             if method not in cell_methods:
                 raise ValueError(f"Required method {method} not found in cell calling results. Available methods: {cell_methods}")
             
             for j, cutoff in enumerate(guide_cutoffs):
                 col_name = f'{method}_fraction_cells_with_guides_cutoff{cutoff}'
                 if col_name in df.columns:
-                    axes[4, 1].plot(df['subsample_fraction'], df[col_name], 
+                    axes[4, 1].plot(x_data, df[col_name], 
                                    'o-', color=cutoff_colors[j % len(cutoff_colors)], label=f'Cutoff {cutoff}')
             
-            axes[4, 1].set_xlabel('Subsample Fraction')
+            axes[4, 1].set_xlabel(x_label)
             axes[4, 1].set_ylabel('Fraction of Cells with Guides')
             axes[4, 1].set_title(f'Cell Coverage Saturation by Cutoff ({method})')
             axes[4, 1].grid(True, alpha=0.3)
@@ -797,7 +800,7 @@ def main():
         # Generate saturation plots
         print("Generating saturation plots...")
         pool = get_sample_pool_from_id(config, args.sample_id)
-        plot_metadata = plot_saturation_curves(saturation_data, output_plot_path, args.sample_id, 
+        plot_metadata = plot_saturation_curves(saturation_data, output_plot_path, args.sample_id, config,
                                                list(cell_barcodes_dict.keys()), is_guide, guide_cutoffs, pool=pool, total_reads=total_reads)
         
         # Save plot metadata
