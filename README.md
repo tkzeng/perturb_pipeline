@@ -37,13 +37,13 @@ conda activate /oak/stanford/groups/engreitz/Users/tonyzeng/miniconda3/envs/kb
 # If you need to set up your own environment, contact the maintainer for the environment.yml file
 
 # 3. Copy and modify the example config
-cp gw_analysis/config.yann_k562.yaml gw_analysis/config.my_experiment.yaml
-# Edit gw_analysis/config.my_experiment.yaml with your paths and parameters
+cp analysis/config.yann_k562.yaml analysis/config.my_experiment.yaml
+# Edit analysis/config.my_experiment.yaml with your paths and parameters
 
 # 4. Prepare your input files (see Required Input Files section)
 
 # 5. Run the pipeline
-cd gw_analysis
+cd analysis
 CONFIG=config.my_experiment.yaml ./submit.sh
 ```
 
@@ -237,7 +237,7 @@ Organize your data as follows:
 ```
 perturb_pipeline/
 ├── README.md
-├── gw_analysis/
+├── analysis/
 │   ├── Snakefile
 │   ├── submit.sh
 │   ├── config.yann_k562.yaml
@@ -262,7 +262,7 @@ conda activate /oak/stanford/groups/engreitz/Users/tonyzeng/miniconda3/envs/kb
 
 ### 2. Navigate to Pipeline Directory
 ```bash
-cd gw_analysis
+cd analysis
 ```
 
 ### 3. Run the Pipeline
@@ -421,7 +421,7 @@ analysis:
 ### Running the K562 Example
 ```bash
 # Navigate to the pipeline directory
-cd gw_analysis
+cd analysis
 
 # Use the K562 config directly
 CONFIG=config.yann_k562.yaml ./submit.sh

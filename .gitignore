@@ -4,10 +4,10 @@ analysis_results/
 data/
 misc/
 references/
-gw_analysis/statin_perturb/
-gw_analysis/scripts/UNUSED/
-gw_analysis/misc/
-gw_analysis/.snakemake/
+analysis/statin_perturb/
+analysis/scripts/UNUSED/
+analysis/misc/
+analysis/.snakemake/
 
 # Results and logs directories
 results_*/
@@ -16,12 +16,12 @@ logs_*/
 *_logs/
 
 # External software/repos
-gw_analysis/bustools/
-gw_analysis/kb_python/
+analysis/bustools/
+analysis/kb_python/
 
 # Specific large files
 find_large_files.sh
-gw_analysis/CLAUDE.md
+analysis/CLAUDE.md
 
 # Large files (>50MB)
 *.h5
