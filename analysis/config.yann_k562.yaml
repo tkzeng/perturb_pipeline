@@ -3,7 +3,11 @@
 # ============================================================================
 
 # Analysis identification
-analysis_name: "yann_k562_analysis"  # Used for scratch subdirectory and organizing outputs
+# This name determines your output directories:
+#   - Results: ./results_{analysis_name}/
+#   - Logs: ./logs_{analysis_name}/
+#   - Scratch: $SCRATCH/{analysis_name}/
+analysis_name: "yann_k562_analysis"
 
 # Sample information files (specific to this experiment)
 sample_info_file: "references_yann_k562/sample_info.k562_yann.xlsx"
@@ -11,11 +15,6 @@ plate_maps_file: "references_yann_k562/plate_map.xlsx"
 
 # Guide library file (specific to this experiment)
 guide_file: "references_yann_k562/k562_yann_guides.txt"
-
-# Output directories (specific to this analysis)
-output_paths:
-  results_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/perturb_pipeline/results_yann_k562"
-  logs_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/perturb_pipeline/logs_yann_k562"
 
 # Sample selection (leave empty to process all samples in sample_info)
 sample_ids: []

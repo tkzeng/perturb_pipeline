@@ -30,10 +30,13 @@ def get_scratch_path(*parts, config=None):
 
 
 def get_results_path(*parts, config=None):
-    """Build results directory paths"""
+    """Build results directory paths automatically from analysis_name"""
     if not config:
         raise ValueError("config is required for get_results_path")
-    results_base = config['output_paths']['results_base']
+    
+    # Auto-generate from current directory and analysis_name
+    analysis_name = config['analysis_name']
+    results_base = os.path.join(os.getcwd(), f"results_{analysis_name}")
     
     if parts and parts[0]:
         path_parts = [str(p) for p in parts]
@@ -42,10 +45,13 @@ def get_results_path(*parts, config=None):
 
 
 def get_logs_path(*parts, config=None):
-    """Build logs directory paths"""
+    """Build logs directory paths automatically from analysis_name"""
     if not config:
         raise ValueError("config is required for get_logs_path")
-    logs_base = config['output_paths']['logs_base']
+    
+    # Auto-generate from current directory and analysis_name
+    analysis_name = config['analysis_name']
+    logs_base = os.path.join(os.getcwd(), f"logs_{analysis_name}")
     
     if parts and parts[0]:
         path_parts = [str(p) for p in parts]
