@@ -1,87 +1,44 @@
-# ============================================================================
-# RUN-SPECIFIC CONFIGURATION (Change these for each analysis)
-# ============================================================================
 
-# Analysis identification
-# This name determines your output directories:
-#   - Results: ./results_{analysis_name}/
-#   - Logs: ./logs_{analysis_name}/
-#   - Scratch: $SCRATCH/{analysis_name}/
 analysis_name: "yann_k562_analysis"
-
-# Sample information files (specific to this experiment)
 sample_info_file: "references_yann_k562/sample_info.k562_yann.xlsx"
 plate_maps_file: "references_yann_k562/plate_map.xlsx"
-
-# Guide library file (specific to this experiment)
 guide_file: "references_yann_k562/k562_yann_guides.txt"
 
-# Sample selection (leave empty to process all samples in sample_info)
+# Sample selection (leave empty to process all samples in sample_info_file)
 sample_ids: []
 
-# Analysis parameters to adjust
 analysis:
-  combinations:  # Which source/processing combinations to run
-    - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
-  threads: 24  # Number of threads for compute-intensive steps
-  strand: "forward"  # Options: "forward" or "unstranded"
-  # Technical parameters (rarely changed)
-  genome_types: ["all"]
-  index_prefix: "nascent"
-  # kb_chemistry string for Parse Bio kits - MUST match your chemistry version:
-  #
-  # Chemistry v2 (most common):
+  # Chemistry v2:
   # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111
   # kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
   #
-  # Chemistry v3 (newer kits):
+  # Chemistry v3:
   # Amplicon: NNNNNNNNNN33333333ATGAGGGGTCAG22222222TCCAACCACCTC11111111
   # kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"
   kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"  # Using v2 chemistry
 
-# ============================================================================
-# KIT-SPECIFIC CONFIGURATION (CHECK for each experiment!)
-# ============================================================================
 
-# Parse Bio kit configuration (MUST match your experiment's kit)
+  # IT IS OPTIONAL TO ADJUST THESE -> -> ->
+  combinations:  # Which source/processing combinations to run
+    - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
+  threads: 24  # Number of threads for compute-intensive steps
+  strand: "forward"  # Options: "forward" or "unstranded"
+  genome_types: ["all"]
+  index_prefix: "nascent"
+
 input_paths:
-  # Parse Bio barcode files
-  # IMPORTANT: Choose files that match your Parse Bio kit type AND chemistry version:
-  # 
-  # Chemistry v2 (most common):
+  # Chemistry v2:
   # - 96-well kit: Use replace.96_v2.txt and barcodes.96_v2.txt
   # - 48-well kit: Use replace.48_v2.txt and barcodes.48_v2.txt  
   # - Mini kit (12-well): Use replace.12_v2.txt and barcodes.12_v2.txt
   #
-  # Chemistry v3 (newer kits):
+  # Chemistry v3:
   # - 96-well kit: Use replace.96_v3.txt and barcodes.96_v3.txt
   # - 48-well kit: Use replace.48_v3.txt and barcodes.48_v3.txt
   # - Mini kit (12-well): Use replace.12_v3.txt and barcodes.12_v3.txt
-  #
-  # Legacy files (without version suffix) are chemistry v2 96-well
   replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96_v2.txt"
   barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96_v2.txt"
-  # Guide reference file for QC analysis - maps guide IDs to target genes
-  guide_reference: "references_yann_k562/k562_yann_guides_qc_reference.txt"
-  # Primer info file - CHECK FOR EACH EXPERIMENT!
-  # Maps i5/i7 index sequences to sample names for undetermined read recovery
-  # IMPORTANT: Verify this file matches YOUR experiment's primer/index design
-  # If not doing undetermined read recovery (processing="raw" only), this file is not used
-  primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
-  
-# ============================================================================
-# STABLE REFERENCE FILES (Usually don't change between runs)
-# ============================================================================
 
-  # Gene annotation reference files
-  ribosomal_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ribosomal.txt"
-  cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
-  gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
-  
-  # Parse Bio barcode CSV file for well mapping (from splitpipe software)
-  # This CSV maps barcode sequences to well positions (A1, B2, etc.)
-  # Use the appropriate file for your kit and chemistry version:
-  #
   # Chemistry v2:
   # - 96-well: bc_data_n198_v5.csv
   # - 48-well: bc_data_n99_v5.csv
@@ -93,11 +50,27 @@ input_paths:
   # - 12-well: bc_data_n37_R1_v3_6.csv
   parsebio_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.6.0/splitpipe/barcodes/bc_data_n198_v5.csv"
   
+  # Guide reference file for QC analysis
+  guide_reference: "references_yann_k562/k562_yann_guides_qc_reference.txt"
+
+
+
+  # IT IS OPTIONAL TO ADJUST THESE -> -> ->
+  # If not doing undetermined read recovery (processing="raw" only), this file is not used
+  primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
+  
+  # Gene annotation reference files
+  ribosomal_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ribosomal.txt"
+  cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
+  gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
+
   # Reference genome/index locations
   reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
   nascent_genome: "nascent_all"  # Subdirectory with genome index files
   
 
+
+# IT IS OPTIONAL TO ADJUST THESE -> -> ->
 
 # Cell calling parameters
 cell_calling:
