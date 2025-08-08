@@ -30,7 +30,9 @@ CONFIG=config.my_experiment.yaml ./submit.sh
 
 ## Required Input Files
 
-Before running the pipeline, you need to prepare the following files:
+Before running the pipeline, you need to prepare the following files.
+
+**Example files:** See `analysis/references_yann_k562/` for complete examples of all required input files from a real K562 CRISPR screen experiment.
 
 ### 1. Sample Information Excel File (`sample_info.xlsx`)
 **Purpose:** Defines all samples, their properties, and relationships  
