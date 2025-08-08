@@ -357,16 +357,14 @@ def main():
     gene_database_path = config['input_paths']['gene_database']
     cell_cycle_genes_path = config['input_paths']['cell_cycle_genes']
     
-    # Barcode files for validation
-    barcodes_96_path = config['input_paths']['parsebio_96_barcodes']
-    barcodes_48_path = config['input_paths']['parsebio_48_barcodes']
+    # Barcode file for validation
+    parsebio_barcodes_path = config['input_paths']['parsebio_barcodes']
     
     # Plate mapping file
     plate_maps_file = config.get('plate_maps_file')
     
-    # Load barcode files once
-    barcodes_96 = pd.read_csv(barcodes_96_path)
-    barcodes_48 = pd.read_csv(barcodes_48_path)
+    # Load barcode file once
+    parsebio_barcodes = pd.read_csv(parsebio_barcodes_path)
     
     # Load sample info once and extract all needed information
     log_print("📋 Loading sample information...")
@@ -455,7 +453,7 @@ def main():
             log_print(f"   Using plate mapping: {plate_name}")
             if not plate_maps_file:
                 raise ValueError("plate_maps_file must be specified in config for plate mapping")
-            map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, barcodes_96, barcodes_48)
+            map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, parsebio_barcodes)
         
         # Process guide assignments (currently a stub function)
         # filter_guides_by_reference(adata)  # Skip - not needed for this pipeline

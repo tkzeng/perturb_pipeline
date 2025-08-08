@@ -29,6 +29,8 @@ analysis:
   # Technical parameters (rarely changed)
   genome_types: ["all"]
   index_prefix: "nascent"
+  # kb_chemistry string for Parse Bio kit v2 (current/most common version)
+  # For Parse Bio kit v1 or v3, use different chemistry strings - contact Parse Bio support
   kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
 
 # ============================================================================
@@ -38,6 +40,10 @@ analysis:
 # Parse Bio kit configuration (stable across experiments)
 input_paths:
   # Parse Bio barcode files
+  # IMPORTANT: Number of barcodes must match your Parse Bio kit type:
+  # - 96-well kit: Use replace.96.txt and barcodes.96.txt (96 barcodes each)
+  # - 48-well kit: Use replace.48.txt and barcodes.48.txt (48 barcodes each)
+  # - Mini kit (12-well): Use replace.12.txt and barcodes.12.txt (12 barcodes each)
   replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96.txt"
   barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96.txt"
   # Guide reference file for QC analysis - maps guide IDs to target genes
@@ -51,9 +57,13 @@ input_paths:
   cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
   gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
   
-  # Parse Bio barcode CSV files for well mapping validation
-  parsebio_96_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_n198_v5.csv"
-  parsebio_48_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_v2.csv"
+  # Parse Bio barcode CSV file for well mapping (from splitpipe software)
+  # This CSV maps barcode sequences to well positions (A1, B2, etc.)
+  # Use the appropriate file for your kit:
+  # - 96-well: bc_data_n198_v5.csv or similar
+  # - 48-well: bc_data_v2.csv or similar
+  # - 12-well mini: bc_data_mini.csv or similar
+  parsebio_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.2.1/splitpipe/barcodes/bc_data_n198_v5.csv"
   
   # Reference genome/index locations
   reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"

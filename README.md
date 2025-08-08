@@ -57,29 +57,42 @@ Before running the pipeline, you need to prepare the following files:
 **Purpose:** Defines all samples, their properties, and relationships  
 **Location:** Referenced in config as `sample_info_file`
 
-**Required columns:**
+**Required columns (must be present for all samples):**
 - `pool`: Pool identifier (e.g., "1k_pilot", "pool1", "pool2")
 - `sample`: Sample name within the pool (e.g., "sample1_gex", "sample1_grna")
 - `sample_id`: Unique identifier combining pool and sample (e.g., "1k_pilot:sample1_gex")
 - `sample_type`: Either "gex" (gene expression) or "guide" (guide RNA)
+- `fastq_dir`: Directory containing FASTQ files for this sample
 - `expected_cells`: Expected number of cells for this library (e.g., 5000)
 - `min_umi_threshold`: Minimum UMI count threshold for cell calling (e.g., 100)
-- `fastq_dir`: Directory containing FASTQ files for this sample
-- `sample_to_well_mapping`: Name of the plate mapping to use (e.g., "plate1")
+- `sample_to_well_mapping`: Name of the plate mapping sheet (e.g., "plate1")
+- `paired_guide_sample_id`: Full ID of paired guide library (for GEX samples, leave empty for guide samples)
+
+**Optional columns (required only for specific features):**
+
+*For undetermined read recovery:*
 - `i7_barcode`: i7 index sequence (8bp, e.g., "AAGGCTAT")
 - `i5_barcode`: i5 index sequence (8bp, e.g., "AAACATCG")
+
+**Columns not used by pipeline (can be included for documentation):**
 - `notes`: Optional notes about the sample
 - `read1_length`: Length of Read 1 (typically 150)
 - `read2_length`: Length of Read 2 (typically 150)
-- `paired_guide_pool`: Pool of the paired guide library (for GEX samples)
-- `paired_guide_sample`: Sample name of paired guide library (for GEX samples)
-- `paired_guide_sample_id`: Full ID of paired guide library (for GEX samples)
+- `paired_guide_pool`: Pool of paired guide (derived from paired_guide_sample_id)
+- `paired_guide_sample`: Sample name of paired guide (not used)
 
-**Example (from K562 screen):**
+**Minimal example:**
 ```
-pool        sample          sample_id                sample_type  expected_cells  fastq_dir
-1k_pilot    sample1_gex     1k_pilot:sample1_gex     gex         5000           /data/fastqs/
-1k_pilot    sample1_grna    1k_pilot:sample1_grna    guide       5000           /data/fastqs/
+pool     sample       sample_id              sample_type  expected_cells  min_umi_threshold  fastq_dir      sample_to_well_mapping  paired_guide_sample_id
+1k_pilot sample1_gex  1k_pilot:sample1_gex   gex         5000           100                /data/fastqs/  plate1                  1k_pilot:sample1_grna
+1k_pilot sample1_grna 1k_pilot:sample1_grna  guide       5000           100                /data/fastqs/  plate1                  
+```
+
+**Full example with optional columns (from K562 screen):**
+```
+pool     sample       sample_id              sample_type  expected_cells  min_umi_threshold  fastq_dir      i7_barcode  i5_barcode  sample_to_well_mapping  paired_guide_sample_id
+1k_pilot sample1_gex  1k_pilot:sample1_gex   gex         5000           100                /data/fastqs/  AAGGCTAT    AAACATCG    plate1                  1k_pilot:sample1_grna
+1k_pilot sample1_grna 1k_pilot:sample1_grna  guide       5000           100                /data/fastqs/  CTATTAAG    AAACATCG    plate1                  
 ```
 
 💡 **Tip:** See `config.yann_k562.yaml` for a complete working example configuration.
@@ -93,14 +106,26 @@ pool        sample          sample_id                sample_type  expected_cells
 - Required columns per sheet:
   - `Well Position`: Well identifier (A1-H12 for 96-well plate)
   - `Sample`: Biological sample name
-  - `Rep`: Replicate identifier
+
+**Optional columns:**
+- `Rep`: Replicate identifier (stored as metadata but not used by pipeline)
+- Any other columns will be stored as cell metadata in the AnnData object
 
 **Example (sheet "plate1"):**
 ```
-Well Position    Sample    Rep
-A1              rep1      rep1
-A2              rep4      rep4
-A3              rep1      rep1
+Well Position    Sample
+A1              rep1
+A2              rep4  
+A3              rep1
+...
+```
+
+**Example with optional metadata (sheet "plate1"):**
+```
+Well Position    Sample    Rep    Treatment
+A1              rep1      rep1   control
+A2              rep4      rep4   treated
+A3              rep1      rep1   control
 ...
 ```
 
@@ -109,42 +134,76 @@ A3              rep1      rep1
 **Location:** Referenced in config as `guide_file`
 
 **Format:** Tab-separated text file with columns:
-- Column 1: Guide ID
-- Column 2: Guide sequence (typically 20bp)
+- Column 1: Guide sequence (typically 20-21bp)
+- Column 2: Guide ID/name
 
 **Example:**
 ```
-AAVS1_guide1    ACCCCACAGTGGGGCCACTA
-AAVS1_guide2    GGGGCCACTAGGGACAGGAT
-TP53_guide1     GAAATTTGCGTGTGGAGTAT
+ACCCCACAGTGGGGCCACTA    AAVS1_guide1
+GGGGCCACTAGGGACAGGAT    AAVS1_guide2
+GAAATTTGCGTGTGGAGTAT    TP53_guide1
 ```
 
 ### 4. Guide Reference File (`guides_qc_reference.txt`)
 **Purpose:** Maps guide IDs to target genes for QC analysis  
 **Location:** Referenced in config as `guide_reference`
 
-**Format:** Tab-separated with columns:
-- `guide_id`: Must match IDs in guides.txt
-- `target_gene`: Gene symbol
-- `guide_type`: "targeting" or "non-targeting"
-- `sequence`: Guide sequence (optional, for validation)
+**Required columns (tab-separated):**
+- `ID`: Guide identifier (must match IDs in guides.txt)
+- `gene`: Target gene name(s) - use separator for multi-gene targets
 
-**Example:**
+**Optional columns:**
+- `separator`: Character to split multi-gene targets (defaults to '_AND_')
+- Any other columns are ignored
+
+**Example (minimal):**
 ```
-guide_id        target_gene    guide_type      sequence
-AAVS1_guide1    AAVS1         targeting       ACCCCACAGTGGGGCCACTA
-NTC_guide1      None          non-targeting   GCTAGCTAGCTAGCTAGCTA
+ID              gene
+AAVS1_guide1    AAVS1
+AAVS1_guide2    AAVS1
+NTC_guide1      non-targeting
+```
+
+**Example (with multi-gene targets):**
+```
+ID              gene            separator
+DUAL_guide1     GENE1_AND_GENE2 _AND_
+TRIPLE_guide1   A;B;C           ;
+NTC_guide1      non-targeting   
 ```
 
 ### 5. Parse Bio Barcode Files
 **Purpose:** Define the barcode sequences for demultiplexing  
-**Locations:**
-- `replace_file`: Replace barcode sequences (96 sequences for 96-well)
-- `barcodes_file`: Cell barcode sequences (96 sequences for 96-well)
+**Locations:** Referenced in config `input_paths` section
+- `replace_file`: Replace barcode sequences 
+- `barcodes_file`: Cell barcode sequences 
 
-**Format:** Plain text, one barcode per line (must have exactly 96 lines for 96-well kit)
+**Format:** Plain text, one barcode per line
 
-### 6. Reference Files
+**Important:** Number of barcodes must match your Parse Bio kit:
+- 96-well kit: 96 barcodes per file
+- 48-well kit: 48 barcodes per file  
+- Mini kit (12-well): 12 barcodes per file
+
+**Note:** The example config uses 96-well format. Adjust the barcode files and paths for other kit types.
+
+### 6. Parse Bio Barcode CSV File
+**Purpose:** Maps barcode sequences to well positions for cell demultiplexing  
+**Location:** Referenced in config as `parsebio_barcodes`
+
+**Format:** CSV file from Parse Bio's splitpipe software with columns:
+- `sequence`: 8bp barcode sequence
+- `well`: Well position (A1, B2, etc.)
+- Additional columns may be present but are ignored
+
+**Important:** Use the CSV file that matches your kit type:
+- 96-well kit: `bc_data_n198_v5.csv` or similar (96 rows)
+- 48-well kit: `bc_data_v2.csv` or similar (48 rows)
+- 12-well mini kit: `bc_data_mini.csv` or similar (12 rows)
+
+This file is different from the plain text barcode files (replace.txt, barcodes.txt) and comes from the Parse Bio splitpipe software package.
+
+### 7. Reference Files
 **Purpose:** Gene annotations and genome indices  
 **Required files:**
 - `ribosomal_genes`: List of ribosomal gene names (one per line)

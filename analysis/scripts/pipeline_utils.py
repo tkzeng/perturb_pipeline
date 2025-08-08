@@ -605,17 +605,15 @@ def add_guide_data(adata_gex, adata_guide):
 # 2.5. BARCODE MAPPING FUNCTIONS (copied from statin_perturb)
 # =============================================================================
 
-def extract_and_validate_barcodes(adata, barcodes_96, barcodes_48):
+def extract_and_validate_barcodes(adata, parsebio_barcodes):
     """Extract Round1 barcodes from cell names and validate.
     
     Parameters:
     -----------
     adata : AnnData
         Annotated data object
-    barcodes_96 : DataFrame
-        96-well barcode mapping
-    barcodes_48 : DataFrame
-        48-well barcode mapping
+    parsebio_barcodes : DataFrame
+        Parse Bio barcode mapping CSV (maps sequences to wells)
     """
     log_print("🔍 Extracting Round1 barcodes from cell names...")
 
@@ -632,11 +630,8 @@ def extract_and_validate_barcodes(adata, barcodes_96, barcodes_48):
     log_print(f"📊 Extracted barcodes for {len(adata.obs_names)} cells")
 
     # Validate barcodes against known Round1 barcodes
-    if barcodes_96 is not None and barcodes_48 is not None:
-        all_valid_barcodes = set()
-        # Use 'sequence' column, not 'barcode'
-        all_valid_barcodes.update(barcodes_96["sequence"])
-        all_valid_barcodes.update(barcodes_48["sequence"])
+    if parsebio_barcodes is not None:
+        all_valid_barcodes = set(parsebio_barcodes["sequence"])
 
         valid_mask = adata.obs["round1"].isin(all_valid_barcodes)
         invalid_count = (~valid_mask).sum()
@@ -651,10 +646,10 @@ def extract_and_validate_barcodes(adata, barcodes_96, barcodes_48):
 
         log_print("✅ All Round1 barcodes are valid")
     else:
-        raise RuntimeError("CRITICAL: Could not load Round1 barcode files for validation")
+        raise RuntimeError("CRITICAL: Could not load Round1 barcode file for validation")
 
 
-def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, barcodes_96, barcodes_48):
+def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, parsebio_barcodes):
     """Map cells to biological samples using barcode mappings and plate maps.
     
     Parameters:
@@ -665,10 +660,8 @@ def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, barcodes
         Name of the plate for mapping
     plate_maps_file : str
         Path to plate maps Excel file
-    barcodes_96 : DataFrame
-        96-well barcode mapping
-    barcodes_48 : DataFrame
-        48-well barcode mapping
+    parsebio_barcodes : DataFrame
+        Parse Bio barcode mapping CSV (maps sequences to wells)
     """
     log_print(f"🗺️ Mapping cells to biological samples using plate {plate_name}...")
 
@@ -676,15 +669,13 @@ def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, barcodes
     well_to_sample, well_to_metadata = create_well_to_sample_mapping_from_plates(plate_name, plate_maps_file)
 
     # Extract and validate barcodes
-    extract_and_validate_barcodes(adata, barcodes_96, barcodes_48)
+    extract_and_validate_barcodes(adata, parsebio_barcodes)
 
-    # Create barcode lookup dictionaries
-    barcodes_48_dict = barcodes_48.set_index("sequence")["well"].to_dict()
-    barcodes_96_dict = barcodes_96.set_index("sequence")["well"].to_dict()
+    # Create barcode lookup dictionary
+    barcodes_dict = parsebio_barcodes.set_index("sequence")["well"].to_dict()
 
-    # For now, assume 96-well format (can be made configurable later)
     # Map barcodes to wells
-    adata.obs["well"] = adata.obs["round1"].map(barcodes_96_dict)
+    adata.obs["well"] = adata.obs["round1"].map(barcodes_dict)
 
     # Map wells to biological samples
     adata.obs["biological_sample"] = adata.obs["well"].map(well_to_sample)
