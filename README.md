@@ -359,10 +359,38 @@ CONFIG=config.yann_k562.yaml ./submit.sh --dry-run --rerun-triggers mtime
 
 ## Output Structure
 
-The pipeline creates the following output structure:
+### Primary Output: QC Report
+
+**The QC report is the main output of the pipeline** and contains comprehensive quality control metrics and visualizations for your experiment. After the pipeline completes, you'll find it at:
+
+```
+results_base/qc_report/
+├── plots/                    # All QC visualizations
+│   ├── consolidated_general/ # Overall experiment metrics
+│   ├── consolidated_cell_based/ # Cell-level QC metrics
+│   ├── cell_calling/         # Cell calling method comparisons
+│   ├── per_cell/            # Individual cell metrics
+│   └── per_sample/          # Sample-specific plots
+└── data/                     # Raw QC data files
+```
+
+The QC report includes visualizations for:
+- Read alignment and mapping statistics
+- Cell calling method comparisons
+- UMI and gene detection metrics
+- Guide assignment statistics
+- Saturation curves
+- Sample quality metrics
+
+Instructions for viewing and interpreting the QC report are provided within the report directory after pipeline completion.
+
+### Complete Output Structure
 
 ```
 results_base/
+├── qc_report/                            # PRIMARY OUTPUT - Quality control report
+│   ├── plots/                           # QC visualizations
+│   └── data/                            # QC metrics data
 ├── {pool}/
 │   ├── {sample_id}/
 │   │   ├── counts.txt                    # Read counts
@@ -375,10 +403,7 @@ results_base/
 │   │   └── saturation/                   # Saturation analysis
 │   │       └── saturation_curves.png
 │   └── {pool}:Undetermined/              # Undetermined reads
-├── qc_report/
-│   ├── data/                             # QC metrics data
-│   └── plots/                            # QC visualization
-└── analysis_ready/                       # Final processed data
+└── analysis_ready/                       # Final processed data (if enabled)
     ├── gex_all.h5ad                      # Combined GEX data
     └── guide_all.h5ad                    # Combined guide data
 ```
