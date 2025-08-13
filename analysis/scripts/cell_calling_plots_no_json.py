@@ -145,7 +145,8 @@ def create_umi_distribution_plot_by_method(adata, methods_results, sample_id,
 
 
 def create_barcode_rank_plot_by_method(adata, methods_results, sample_id, 
-                                       output_dir, plot_dir, pool, source, processing, read_stats=None):
+                                       output_dir, plot_dir, pool, source, processing, read_stats=None, 
+                                       dropletutils_df=None):
     """Create separate barcode rank plots for each cell calling method."""
     # Calculate total UMIs per barcode
     total_counts = np.array(adata.X.sum(axis=1)).flatten()
@@ -167,7 +168,7 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
         ax = plt.subplot(n_rows, n_cols, idx + 1)
         
         # Plot all barcodes as background
-        ax.loglog(ranks, total_counts_sorted, 'k-', alpha=0.2, linewidth=0.5, label='All barcodes')
+        ax.loglog(ranks, total_counts_sorted, 'k-', alpha=0.3, linewidth=1, label='All barcodes', zorder=2)
         
         # Get cell barcodes for this method
         cell_barcodes = methods_results[method]['cell_barcodes']
@@ -192,15 +193,28 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
                 
                 # Plot cells in color
                 ax.scatter(cell_ranks, cell_counts, alpha=0.8, s=4, 
-                          label=f'Cells (n={n_cells:,})', color='red', zorder=5)
+                          label=f'Cells (n={n_cells:,})', color='red', zorder=6)
                 
                 # Add threshold line if applicable
                 if threshold > 0 and method not in ['Expected_Cells']:
                     ax.axhline(y=threshold, color='blue', linestyle='--', alpha=0.7, 
                               label=f'Threshold: {threshold:.0f}')
                     
-                    # For BarcodeRanks methods, also add vertical line at the rank position
-                    if method in ['BarcodeRanks_Knee', 'BarcodeRanks_Inflection']:
+                    # For BarcodeRanks methods, plot the fitted spline if available
+                    if method in ['BarcodeRanks_Knee', 'BarcodeRanks_Inflection'] and dropletutils_df is not None:
+                        # Get fitted values from dropletutils results
+                        if 'br_fitted' in dropletutils_df.columns and 'br_rank' in dropletutils_df.columns:
+                            # Filter out NA values and sort by rank
+                            fitted_data = dropletutils_df[['br_rank', 'br_fitted', 'total_counts']].copy()
+                            fitted_data = fitted_data.dropna(subset=['br_fitted', 'br_rank'])
+                            
+                            if len(fitted_data) > 0:
+                                fitted_data = fitted_data.sort_values('br_rank')
+                                # Plot the fitted spline with transparency and dashed style
+                                ax.plot(fitted_data['br_rank'], fitted_data['br_fitted'], 
+                                       color='limegreen', linestyle='--', linewidth=2.5, alpha=0.7, 
+                                       label='Fitted spline', zorder=4)
+                        
                         # Find the rank where this threshold is reached
                         # Use searchsorted to find where threshold would be inserted in sorted array
                         threshold_rank = np.searchsorted(-total_counts_sorted, -threshold) + 1
@@ -403,7 +417,8 @@ def main():
     by_method_path = create_barcode_rank_plot_by_method(
         adata, methods_results, args.sample_id,
         args.cell_calling_dir, args.plot_dir,
-        pool, args.source, args.processing, read_stats
+        pool, args.source, args.processing, read_stats,
+        dropletutils_df
     )
     
     # Generate the UMI distribution plots by method

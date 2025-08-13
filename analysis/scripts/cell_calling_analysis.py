@@ -41,9 +41,13 @@ def load_h5ad_matrix(h5ad_file):
     
     return adata
 
-def run_dropletutils_r(kb_dir, sample_id, output_dir, emptydrops_lower=100, ncores=4, expected_cells=0, 
+def run_dropletutils_r(kb_dir, sample_id, output_dir, emptydrops_lower=100, ncores=1, expected_cells=0, 
                       run_emptydrops=False, run_barcoderanks=False, fdr_cutoffs=None):
-    """Run R script for DropletUtils analysis (EmptyDrops and/or BarcodeRanks)."""
+    """Run R script for DropletUtils analysis (EmptyDrops and/or BarcodeRanks).
+    
+    NOTE: EmptyDrops is DEPRECATED. Use BarcodeRanks methods instead.
+    EmptyDrops code is preserved for backwards compatibility but is not actively maintained.
+    """
     # Get the path to the R script relative to this Python script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     r_script_path = os.path.join(script_dir, "dropletutils_r.R")
@@ -221,7 +225,7 @@ def main():
     parser.add_argument("--sample-id", required=True, help="Full sample ID (format: pool:sample)")
     parser.add_argument("--config", required=True, help="Config YAML file")
     parser.add_argument("--output_dir", required=True, help="Output directory")
-    parser.add_argument("--ncores", type=int, default=4, help="Number of cores for parallel processing")
+    parser.add_argument("--ncores", type=int, required=True, help="Number of cores for parallel processing")
     
     args = parser.parse_args()
     
@@ -278,6 +282,7 @@ def main():
         print("Running DropletUtils analysis on pre-filtered matrix...")
         if run_emptydrops:
             print(f"  - EmptyDrops enabled with FDR cutoffs: {emptydrops_fdr_cutoffs}")
+            print("  WARNING: EmptyDrops is DEPRECATED. Use BarcodeRanks methods instead.")
         if run_barcoderanks:
             print("  - BarcodeRanks enabled")
             

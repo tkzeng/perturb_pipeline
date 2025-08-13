@@ -61,11 +61,6 @@ rule all:
         # Temporary: ensure kite index is built
         f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx" 
 
-
-
-# =============================================================================
-# STAGE 1: INPUT PROCESSING AND COUNTING
-# =============================================================================
 rule count_reads:
     input:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
@@ -85,224 +80,6 @@ rule count_reads:
         echo "$R1_COUNT,$R2_COUNT" >> {output}
         """
 
-
-rule calculate_pool_statistics:
-    """Calculate pool-level statistics including undetermined read fraction"""
-    input:
-        # All sample count files for the pool
-        sample_counts=lambda wildcards: [f"{RESULTS}/{row['sample_id']}/counts.txt"
-                                        for _, row in load_sample_info(config).iterrows() 
-                                        if row['pool'] == wildcards.pool],
-        # Undetermined count file - using existing count_reads rule
-        undetermined_counts=f"{RESULTS}/{{pool}}:Undetermined/counts.txt",
-        script="scripts/calculate_pool_statistics.py"
-    output:
-        stats=f"{RESULTS}/qc_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv"
-    log:
-        f"{LOGS}/calculate_pool_statistics_{{pool}}.log"
-    params:
-        pool="{pool}"
-    shell:
-        """
-        python3 {input.script} \
-            --pool {params.pool} \
-            --sample-counts {input.sample_counts} \
-            --undetermined-counts {input.undetermined_counts} \
-            --output {output.stats} &> {log}
-        """
-
-
-
-# =============================================================================
-# STAGE 2: UNDETERMINED RECOVERY AND BARCODE CORRECTION
-# =============================================================================
-rule check_undetermined_barcodes:
-    input:
-        script="scripts/recover_undetermined_barcodes_simple.py"
-    output:
-        report=f"{SCRATCH}/undetermined_index/{{pool}}/recovery_summary.txt"
-    log:
-        f"{LOGS}/undetermined_recovery_{{pool}}.log"
-    params:
-        fastq_dir=lambda wildcards: get_raw_data_path(wildcards.pool, config),
-        outdir=f"{SCRATCH}/undetermined_index/{{pool}}",
-        max_open_files=config["undetermined_recovery"]["max_open_files"]
-    shell:
-        """
-        # Find undetermined FASTQ files for this pool
-        UNDETERMINED_R1=$(find {params.fastq_dir} -name "*Undetermined*R1*.fastq.gz" | head -1)
-        UNDETERMINED_R2=$(find {params.fastq_dir} -name "*Undetermined*R2*.fastq.gz" | head -1)
-        
-        if [ -f "$UNDETERMINED_R1" ] && [ -f "$UNDETERMINED_R2" ]; then
-            python3 -u {input.script} \
-                --fastq-r1 "$UNDETERMINED_R1" \
-                --fastq-r2 "$UNDETERMINED_R2" \
-                --indices "{config[input_paths][primer_info_file]}" \
-                --output-dir {params.outdir} &> {log}
-        else
-            echo "Undetermined FASTQ files not found for {wildcards.pool}" > {output.report}
-            echo "Searched in: {params.fastq_dir}" >> {output.report}
-            echo "R1 file: $UNDETERMINED_R1" >> {output.report}
-            echo "R2 file: $UNDETERMINED_R2" >> {output.report}
-        fi
-        """
-
-
-rule create_undetermined_fastq:
-    input:
-        recovery_summary=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}/recovery_summary.txt",
-        sample_info=config["sample_info_file"],
-        primer_info=config["input_paths"]["primer_info_file"],
-        script="scripts/create_undetermined_single_sample.py"
-    output:
-        r1=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R1.fastq.gz",
-        r2=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R2.fastq.gz"
-    log:
-        f"{LOGS}/create_undetermined_{{sample_id}}.log"
-    params:
-        pool=lambda wildcards: extract_pool(wildcards.sample_id),
-        recovery_dir=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}",
-        output_dir=f"{SCRATCH}/undetermined_fastqs",
-        sample_id="{sample_id}"
-    shell:
-        """
-        python {input.script} \
-            --sample-info {input.sample_info} \
-            --primer-info {input.primer_info} \
-            --recovery-dir {params.recovery_dir} \
-            --sample-id {params.sample_id} \
-            --output-r1 {output.r1} \
-            --output-r2 {output.r2} \
-            --min-reads 1000 &> {log}
-        """
-
-
-rule barcode_recovery:
-    input:
-        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, "raw"),
-        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, "raw"),
-        barcodes=config["input_paths"]["barcodes_file"],
-        script="scripts/recover_barcodes_simple.py"
-    output:
-        r1_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R1.fastq.gz",
-        r2_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R2.fastq.gz",
-        stats=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_stats.txt"
-    log:
-        f"{LOGS}/barcode_recovery_{{sample_id}}_{{source}}.log"
-    params:
-        outdir=f"{SCRATCH}/barcode_recovery/{{source}}",
-        output_prefix=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}",
-        max_reads=config["barcode_recovery"]["max_reads_recovery"],
-        max_shift=config["barcode_recovery"]["max_shift"]
-    shell:
-        """
-        # Build command with optional parameters
-        CMD="python {input.script} \
-            {input.fq1} \
-            {input.fq2} \
-            {params.output_prefix} \
-            --barcode-file {input.barcodes} \
-            --max-shift {params.max_shift}"
-        
-        # Add max-reads if specified
-        if [ -n "{params.max_reads}" ] && [ "{params.max_reads}" != "None" ]; then
-            CMD="$CMD --max-reads {params.max_reads}"
-        fi
-        
-        $CMD &> {log}
-        """
-
-
-rule merge_all_fastqs:
-    """Merge all FASTQs for a sample: main raw + main recovered + undetermined raw + undetermined recovered"""
-    input:
-        # Main reads (raw)
-        main_raw_r1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
-        main_raw_r2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw"),
-        main_recovered_r1=lambda wildcards: f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_recovered_R1.fastq.gz",
-        main_recovered_r2=lambda wildcards: f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_recovered_R2.fastq.gz",
-        # Undetermined reads (raw)
-        undetermined_raw_r1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "undetermined", "raw"),
-        undetermined_raw_r2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "undetermined", "raw"),
-        undetermined_recovered_r1=lambda wildcards: f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R1.fastq.gz",
-        undetermined_recovered_r2=lambda wildcards: f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R2.fastq.gz",
-        # Ensure all prerequisites are done
-        deps=lambda wildcards: [
-            f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_stats.txt",
-            f"{SCRATCH}/undetermined_fastqs/{wildcards.sample_id}_R1.fastq.gz",
-            f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_stats.txt"
-        ]
-    output:
-        merged_r1=f"{SCRATCH}/merged_fastqs/{{sample_id}}_all_merged_R1.fastq.gz",
-        merged_r2=f"{SCRATCH}/merged_fastqs/{{sample_id}}_all_merged_R2.fastq.gz"
-    log:
-        f"{LOGS}/merge_all_fastqs_{{sample_id}}.log"
-    shell:
-        """
-        # Merge R1 files
-        cat {input.main_raw_r1} {input.main_recovered_r1} {input.undetermined_raw_r1} {input.undetermined_recovered_r1} > {output.merged_r1}
-        
-        # Merge R2 files  
-        cat {input.main_raw_r2} {input.main_recovered_r2} {input.undetermined_raw_r2} {input.undetermined_recovered_r2} > {output.merged_r2}
-        """
-
-
-
-# =============================================================================
-# STAGE 3: REFERENCE PREPARATION
-# =============================================================================
-rule kite_index:
-    """Build kite index from guides file using kb ref"""
-    input:
-        guides=lambda wildcards: config['guide_file']
-    output:
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
-        fa=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
-    log:
-        f"{LOGS}/kite_index.log"
-    params:
-        outdir=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
-    threads: config["resources"]["alignment"]["threads"]
-    resources:
-        mem_mb=config["resources"]["alignment"]["mem_mb"],
-    shell:
-        """
-        # Check if the installed version has the modified collision detection
-        if ! python -c "import kb_python.ref; import inspect; exit(0 if 'remove_collisions' in dir(kb_python.ref) else 1)" 2>/dev/null; then
-            echo "ERROR: The installed kb_python does not have the modified remove_collisions function"
-            echo "Please install the modified version from the kb_python directory"
-            echo "Run: cd /path/to/modified/kb_python && pip install -e ."
-            exit 1
-        fi
-        
-        # Remove existing index files to ensure clean build
-        rm -rf {params.outdir}/* tmp
-        
-        # Build kite index with kb ref
-        kb ref -i {output.index_idx} -f1 {output.fa} -g {output.t2g} \
-            --workflow kite {input.guides} -t {threads} &> {log}
-        """
-
-
-rule generate_combined_whitelist:
-    input:
-        barcodes=config["input_paths"]["barcodes_file"],
-        script="scripts/generate_barcode_combinations.py"
-    output:
-        combined=f"{REFERENCES}/barcodes_combined.txt"
-    log:
-        f"{LOGS}/generate_combined_whitelist.log"
-    shell:
-        """
-        python {input.script} {input.barcodes} {output.combined} &> {log}
-        """
-
-
-
-# =============================================================================
-# STAGE 4: ALIGNMENT (KALLISTO/BUSTOOLS)
-# =============================================================================
 rule kallisto_gex:
     input:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, wildcards.processing),
@@ -355,6 +132,38 @@ rule kallisto_gex:
             --cdna {input.cdna} --nascent {input.nascent} --mm &> {log}
         """
 
+rule kite_index:
+    """Build kite index from guides file using kb ref"""
+    input:
+        guides=lambda wildcards: config['guide_file']
+    output:
+        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        fa=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
+    log:
+        f"{LOGS}/kite_index.log"
+    params:
+        outdir=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
+    threads: config["resources"]["alignment"]["threads"]
+    resources:
+        mem_mb=config["resources"]["alignment"]["mem_mb"],
+    shell:
+        """
+        # Check if the installed version has the modified collision detection
+        if ! python -c "import kb_python.ref; import inspect; exit(0 if 'remove_collisions' in dir(kb_python.ref) else 1)" 2>/dev/null; then
+            echo "ERROR: The installed kb_python does not have the modified remove_collisions function"
+            echo "Please install the modified version from the kb_python directory"
+            echo "Run: cd /path/to/modified/kb_python && pip install -e ."
+            exit 1
+        fi
+        
+        # Remove existing index files to ensure clean build
+        rm -rf {params.outdir}/* tmp
+        
+        # Build kite index with kb ref
+        kb ref -i {output.index_idx} -f1 {output.fa} -g {output.t2g} \
+            --workflow kite {input.guides} -t {threads} &> {log}
+        """
 
 rule kallisto_guide:
     input:
@@ -399,7 +208,6 @@ rule kallisto_guide:
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} &> {log}
         """
-
 
 rule kallisto_gex_subsampled:
     input:
@@ -446,7 +254,6 @@ rule kallisto_gex_subsampled:
             --max-reads $TARGET_READS &> {log}
         """
 
-
 rule kallisto_guide_subsampled:
     input:
         fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
@@ -489,11 +296,19 @@ rule kallisto_guide_subsampled:
             --max-reads $TARGET_READS &> {log}
         """
 
+rule generate_combined_whitelist:
+    input:
+        barcodes=config["input_paths"]["barcodes_file"],
+        script="scripts/generate_barcode_combinations.py"
+    output:
+        combined=f"{REFERENCES}/barcodes_combined.txt"
+    log:
+        f"{LOGS}/generate_combined_whitelist.log"
+    shell:
+        """
+        python {input.script} {input.barcodes} {output.combined} &> {log}
+        """
 
-
-# =============================================================================
-# STAGE 5: POST-ALIGNMENT PROCESSING
-# =============================================================================
 rule inspect_bus_files:
     input:
         combined_whitelist=f"{REFERENCES}/barcodes_combined.txt",
@@ -517,6 +332,38 @@ rule inspect_bus_files:
         bustools inspect -o {output.output_modified_unfiltered_inspect} -w {input.combined_whitelist} {input.bus_modified} 2>&1 | tee -a {log}
         """
 
+rule merge_all_fastqs:
+    """Merge all FASTQs for a sample: main raw + main recovered + undetermined raw + undetermined recovered"""
+    input:
+        # Main reads (raw)
+        main_raw_r1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
+        main_raw_r2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw"),
+        main_recovered_r1=lambda wildcards: f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_recovered_R1.fastq.gz",
+        main_recovered_r2=lambda wildcards: f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_recovered_R2.fastq.gz",
+        # Undetermined reads (raw)
+        undetermined_raw_r1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "undetermined", "raw"),
+        undetermined_raw_r2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "undetermined", "raw"),
+        undetermined_recovered_r1=lambda wildcards: f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R1.fastq.gz",
+        undetermined_recovered_r2=lambda wildcards: f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R2.fastq.gz",
+        # Ensure all prerequisites are done
+        deps=lambda wildcards: [
+            f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_stats.txt",
+            f"{SCRATCH}/undetermined_fastqs/{wildcards.sample_id}_R1.fastq.gz",
+            f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_stats.txt"
+        ]
+    output:
+        merged_r1=f"{SCRATCH}/merged_fastqs/{{sample_id}}_all_merged_R1.fastq.gz",
+        merged_r2=f"{SCRATCH}/merged_fastqs/{{sample_id}}_all_merged_R2.fastq.gz"
+    log:
+        f"{LOGS}/merge_all_fastqs_{{sample_id}}.log"
+    shell:
+        """
+        # Merge R1 files
+        cat {input.main_raw_r1} {input.main_recovered_r1} {input.undetermined_raw_r1} {input.undetermined_recovered_r1} > {output.merged_r1}
+        
+        # Merge R2 files  
+        cat {input.main_raw_r2} {input.main_recovered_r2} {input.undetermined_raw_r2} {input.undetermined_recovered_r2} > {output.merged_r2}
+        """
 
 rule filter_and_annotate_sublibrary:
     input:
@@ -575,6 +422,27 @@ rule filter_and_annotate_sublibrary:
         $CMD &> {log}
         """
 
+rule fastp_qc:
+    input:
+        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
+        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw")
+    output:
+        json=f"{RESULTS}/{{sample_id}}/qc/fastp_report.json",
+        html=f"{RESULTS}/{{sample_id}}/qc/fastp_report.html"
+    params:
+        outdir=f"{RESULTS}/{{sample_id}}/qc",
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        sample=lambda wildcards: extract_sample(wildcards.sample_id)
+    log:
+        f"{LOGS}/fastp_qc_{{sample_id}}.log"
+    shell:
+        """
+        fastp -i {input.fq1} -I {input.fq2} \
+              --json {output.json} --html {output.html} \
+              --thread {threads} \
+              --dont_eval_duplication \
+              --report_title "{params.pool}_{params.sample}_QC_Report"
+        """
 
 rule calculate_read_statistics:
     input:
@@ -599,34 +467,6 @@ rule calculate_read_statistics:
             --config {params.config_file} \
             --output {output.stats} &> {log}
         """
-
-
-
-# =============================================================================
-# STAGE 6: QC AND ANALYSIS
-# =============================================================================
-rule fastp_qc:
-    input:
-        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
-        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw")
-    output:
-        json=f"{RESULTS}/{{sample_id}}/qc/fastp_report.json",
-        html=f"{RESULTS}/{{sample_id}}/qc/fastp_report.html"
-    params:
-        outdir=f"{RESULTS}/{{sample_id}}/qc",
-        pool=lambda wildcards: extract_pool(wildcards.sample_id),
-        sample=lambda wildcards: extract_sample(wildcards.sample_id)
-    log:
-        f"{LOGS}/fastp_qc_{{sample_id}}.log"
-    shell:
-        """
-        fastp -i {input.fq1} -I {input.fq2} \
-              --json {output.json} --html {output.html} \
-              --thread {threads} \
-              --dont_eval_duplication \
-              --report_title "{params.pool}_{params.sample}_QC_Report"
-        """
-
 
 rule cell_calling_analysis:
     input:
@@ -666,7 +506,6 @@ rule cell_calling_analysis:
             --ncores {threads} &> {log}
         """
 
-
 rule cell_calling_plots:
     input:
         h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
@@ -700,7 +539,6 @@ rule cell_calling_plots:
         # Create sentinel file to indicate successful completion
         touch {output.complete}
         """
-
 
 rule calculate_qc_metrics_stratified:
     """Calculate comprehensive QC metrics at three stratification levels"""
@@ -776,7 +614,6 @@ rule calculate_qc_metrics_stratified:
             --processing {wildcards.processing} &>> {log}
         """
 
-
 rule umi_saturation_analysis:
     input:
         # Main data (100% point) - using the main raw output
@@ -815,7 +652,6 @@ rule umi_saturation_analysis:
             --processing raw \
             --scratch-dir {params.scratch_dir} &> {log}
         """
-
 
 rule umi_saturation_analysis_guide:
     input:
@@ -858,11 +694,100 @@ rule umi_saturation_analysis_guide:
             --scratch-dir {params.scratch_dir} &> {log}
         """
 
+rule check_undetermined_barcodes:
+    input:
+        script="scripts/recover_undetermined_barcodes_simple.py"
+    output:
+        report=f"{SCRATCH}/undetermined_index/{{pool}}/recovery_summary.txt"
+    log:
+        f"{LOGS}/undetermined_recovery_{{pool}}.log"
+    params:
+        fastq_dir=lambda wildcards: get_raw_data_path(wildcards.pool, config),
+        outdir=f"{SCRATCH}/undetermined_index/{{pool}}",
+        max_open_files=config["undetermined_recovery"]["max_open_files"]
+    shell:
+        """
+        # Find undetermined FASTQ files for this pool
+        UNDETERMINED_R1=$(find {params.fastq_dir} -name "*Undetermined*R1*.fastq.gz" | head -1)
+        UNDETERMINED_R2=$(find {params.fastq_dir} -name "*Undetermined*R2*.fastq.gz" | head -1)
+        
+        if [ -f "$UNDETERMINED_R1" ] && [ -f "$UNDETERMINED_R2" ]; then
+            python3 -u {input.script} \
+                --fastq-r1 "$UNDETERMINED_R1" \
+                --fastq-r2 "$UNDETERMINED_R2" \
+                --indices "{config[input_paths][primer_info_file]}" \
+                --output-dir {params.outdir} &> {log}
+        else
+            echo "Undetermined FASTQ files not found for {wildcards.pool}" > {output.report}
+            echo "Searched in: {params.fastq_dir}" >> {output.report}
+            echo "R1 file: $UNDETERMINED_R1" >> {output.report}
+            echo "R2 file: $UNDETERMINED_R2" >> {output.report}
+        fi
+        """
 
+rule create_undetermined_fastq:
+    input:
+        recovery_summary=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}/recovery_summary.txt",
+        sample_info=config["sample_info_file"],
+        primer_info=config["input_paths"]["primer_info_file"],
+        script="scripts/create_undetermined_single_sample.py"
+    output:
+        r1=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R1.fastq.gz",
+        r2=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R2.fastq.gz"
+    log:
+        f"{LOGS}/create_undetermined_{{sample_id}}.log"
+    params:
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        recovery_dir=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}",
+        output_dir=f"{SCRATCH}/undetermined_fastqs",
+        sample_id="{sample_id}"
+    shell:
+        """
+        python {input.script} \
+            --sample-info {input.sample_info} \
+            --primer-info {input.primer_info} \
+            --recovery-dir {params.recovery_dir} \
+            --sample-id {params.sample_id} \
+            --output-r1 {output.r1} \
+            --output-r2 {output.r2} \
+            --min-reads 1000 &> {log}
+        """
 
-# =============================================================================
-# STAGE 7: CONSOLIDATION AND VISUALIZATION
-# =============================================================================
+rule barcode_recovery:
+    input:
+        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, "raw"),
+        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, "raw"),
+        barcodes=config["input_paths"]["barcodes_file"],
+        script="scripts/recover_barcodes_simple.py"
+    output:
+        r1_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R1.fastq.gz",
+        r2_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R2.fastq.gz",
+        stats=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_stats.txt"
+    log:
+        f"{LOGS}/barcode_recovery_{{sample_id}}_{{source}}.log"
+    params:
+        outdir=f"{SCRATCH}/barcode_recovery/{{source}}",
+        output_prefix=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}",
+        max_reads=config["barcode_recovery"]["max_reads_recovery"],
+        max_shift=config["barcode_recovery"]["max_shift"]
+    shell:
+        """
+        # Build command with optional parameters
+        CMD="python {input.script} \
+            {input.fq1} \
+            {input.fq2} \
+            {params.output_prefix} \
+            --barcode-file {input.barcodes} \
+            --max-shift {params.max_shift}"
+        
+        # Add max-reads if specified
+        if [ -n "{params.max_reads}" ] && [ "{params.max_reads}" != "None" ]; then
+            CMD="$CMD --max-reads {params.max_reads}"
+        fi
+        
+        $CMD &> {log}
+        """
+
 rule consolidate_qc_metrics:
     """Consolidate QC metrics across all samples using simple concatenation"""
     input:
@@ -911,7 +836,6 @@ rule consolidate_qc_metrics:
             --output {output.combined_well} \
             --add-pool &>> {log}
         """
-
 
 rule visualize_consolidated_qc:
     """Generate visualizations for consolidated QC metrics"""
@@ -968,7 +892,6 @@ rule visualize_consolidated_qc:
         touch {output.complete}
         """
 
-
 rule process_pool_metrics:
     """Consolidate and visualize pool-level metrics (only for main/raw)"""
     input:
@@ -999,11 +922,6 @@ rule process_pool_metrics:
             --threads {threads} &>> {log}
         """
 
-
-
-# =============================================================================
-# STAGE 8: FINAL OUTPUTS AND PACKAGING
-# =============================================================================
 rule generate_qc_report:
     """Package QC outputs for laptop viewing with Streamlit dashboard"""
     input:
@@ -1046,107 +964,87 @@ rule generate_qc_report:
         touch {output.done}
         """
 
+rule calculate_pool_statistics:
+    """Calculate pool-level statistics including undetermined read fraction"""
+    input:
+        # All sample count files for the pool
+        sample_counts=lambda wildcards: [f"{RESULTS}/{row['sample_id']}/counts.txt"
+                                        for _, row in load_sample_info(config).iterrows() 
+                                        if row['pool'] == wildcards.pool],
+        # Undetermined count file - using existing count_reads rule
+        undetermined_counts=f"{RESULTS}/{{pool}}:Undetermined/counts.txt",
+        script="scripts/calculate_pool_statistics.py"
+    output:
+        stats=f"{RESULTS}/qc_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv"
+    log:
+        f"{LOGS}/calculate_pool_statistics_{{pool}}.log"
+    params:
+        pool="{pool}"
+    shell:
+        """
+        python3 {input.script} \
+            --pool {params.pool} \
+            --sample-counts {input.sample_counts} \
+            --undetermined-counts {input.undetermined_counts} \
+            --output {output.stats} &> {log}
+        """
 
-rule combine_sublibraries:
-    """Combine cell-called sublibraries into a single analysis-ready file
+rule create_analysis_ready:
+    """Create analysis-ready GEX and guide files with cell calling filtering
     
     WARNING: THIS RULE IS IN DEVELOPMENT AND NOT READY FOR USE
-    The combine_sublibraries.py script and related functionality 
+    The combine_sublibs_analysis_ready.py script and related functionality 
     are still being tested and may not work correctly. Do not use this rule
     for production analysis yet.
     """
     input:
-        # Annotated h5ad files (have annotations but need cell calling applied)
-        h5ad_files=lambda wildcards: [
-            f"{SCRATCH}/{row['sample_id']}/kb_all_{wildcards.source}_{wildcards.processing}/counts_filtered/adata.h5ad"
+        # Ensure cell calling is complete for all GEX samples
+        cell_calling_results=lambda wildcards: [
+            f"{RESULTS}/{row['pool']}/{row['sample_id']}/cell_calling/results.tsv"
             for _, row in load_sample_info(config).iterrows()
             if row['sample_type'] == 'gex'
         ],
-        # Cell barcode files for the chosen method
-        barcode_files=lambda wildcards: [
-            f"{RESULTS}/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/cell_calling/{row['sample_id']}_{config['combined_sublibraries']['cell_calling_method']}_cell_barcodes.txt"
+        # Ensure kallisto alignment is complete for all samples  
+        gex_h5ad=lambda wildcards: [
+            f"{SCRATCH}/{row['sample_id']}/kb_all_all_merged/counts_unfiltered/adata.h5ad"
             for _, row in load_sample_info(config).iterrows()
             if row['sample_type'] == 'gex'
         ],
-        # Per-sample filter parameter files (TODO: generate in QC rules)
-        filter_files=lambda wildcards: [
-            f"{RESULTS}/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/filter_params.yaml"
+        guide_h5ad=lambda wildcards: [
+            f"{SCRATCH}/{row['sample_id']}/kb_guide_all_merged/counts_unfiltered/adata.h5ad"
             for _, row in load_sample_info(config).iterrows()
-            if row['sample_type'] == 'gex'
+            if row['sample_type'] == 'guide'
         ],
-        script="scripts/combine_sublibraries.py"
+        script="scripts/combine_sublibs_analysis_ready.py",
+        config="config.yaml"
     output:
-        combined=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/combined_{{source}}_{{processing}}.h5ad"
+        gex=f"{RESULTS}/{config['analysis_ready']['output_dir']}/gex_all.h5ad",
+        guide=f"{RESULTS}/{config['analysis_ready']['output_dir']}/guide_all.h5ad",
+        metadata=f"{RESULTS}/{config['analysis_ready']['output_dir']}/guide_all.tsv"
     params:
-        cell_calling_method=config['combined_sublibraries']['cell_calling_method'],
-        pools=" ".join(config['combined_sublibraries']['pools']) if config['combined_sublibraries']['pools'] else ""
+        cell_calling_method=config['analysis_ready']['cell_calling_method'],
+        pools=" ".join(config['analysis_ready']['pools']) if config['analysis_ready']['pools'] else ""
     log:
-        f"{LOGS}/combine_sublibraries_{{source}}_{{processing}}.log"
-    wildcard_constraints:
-        source="main|undetermined|all",
-        processing="raw|recovered|merged"
+        f"{LOGS}/create_analysis_ready.log"
     threads: 4
     resources:
         mem_mb=config["resources"]["analysis"]["mem_mb"]
     shell:
         """
-        python {input.script} \
-            --h5ad-files {input.h5ad_files} \
-            --barcode-files {input.barcode_files} \
-            --cell-calling-method {params.cell_calling_method} \
-            --output {output.combined} \
-            --pools {params.pools} \
-            &> {log}
+        if [ -z "{params.pools}" ]; then
+            python {input.script} \
+                --config {input.config} \
+                --gex-output {output.gex} \
+                --guide-output {output.guide} \
+                --cell-calling-method {params.cell_calling_method} \
+                &> {log}
+        else
+            python {input.script} \
+                --config {input.config} \
+                --gex-output {output.gex} \
+                --guide-output {output.guide} \
+                --cell-calling-method {params.cell_calling_method} \
+                --pools {params.pools} \
+                &> {log}
+        fi
         """
-
-
-# =============================================================================
-# STAGE 9: PERTURBATION PREPROCESSING AND ANALYSIS  
-# =============================================================================
-rule preprocess_perturbation:
-    """Comprehensive preprocessing including normalization, clustering, and UMAP
-    
-    WARNING: THIS RULE IS IN DEVELOPMENT AND NOT READY FOR USE
-    The preprocess_perturbation.py script and related functionality 
-    are still being tested and may not work correctly. Do not use this rule
-    for production analysis yet.
-    """
-    input:
-        combined=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/combined_{{source}}_{{processing}}.h5ad",
-        script="scripts/preprocess_perturbation.py"
-    output:
-        preprocessed=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{{source}}_{{processing}}.h5ad"
-    params:
-        target_genes=config.get("preprocessing", {}).get("target_genes", ["TP53", "CDKN1A"]),
-        use_gpu=config.get("preprocessing", {}).get("use_gpu", False),
-        target_clusters=config.get("preprocessing", {}).get("target_clusters", 3),
-        stratification_column=config.get("preprocessing", {}).get("stratification", {}).get("column", "condition"),
-        stratification_values=config.get("preprocessing", {}).get("stratification", {}).get("values", ["72hr_wt", "168hr_wt"]),
-        non_targeting_strings=config.get("preprocessing", {}).get("non_targeting_strings", ["non-targeting", "non.targeting"]),
-        outdir=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessing_{{source}}_{{processing}}"
-    wildcard_constraints:
-        source="main|undetermined|all",
-        processing="raw|recovered|merged"
-    log:
-        f"{LOGS}/preprocess_perturbation_{{source}}_{{processing}}.log"
-    threads: 4
-    resources:
-        mem_mb=config["resources"]["analysis"]["mem_mb"]
-    shell:
-        """
-        mkdir -p {params.outdir}
-        
-        python {input.script} \
-            --input-file {input.combined} \
-            --outdir {params.outdir} \
-            --final-output-file {output.preprocessed} \
-            --target-genes {params.target_genes} \
-            --target-clusters {params.target_clusters} \
-            --stratification-column {params.stratification_column} \
-            --stratification-values {params.stratification_values} \
-            --non-targeting-strings {params.non_targeting_strings} \
-            --cutoff 5 \
-            $([[ "{params.use_gpu}" == "True" ]] && echo "--use-gpu" || echo "") \
-            &> {log}
-        """
-

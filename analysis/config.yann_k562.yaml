@@ -26,7 +26,6 @@ analysis:
   # IT IS OPTIONAL TO ADJUST THESE -> -> ->
   combinations:  # Which source/processing combinations to run
     - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
-  threads: 24  # Number of threads for compute-intensive steps
   strand: "forward"  # Options: "forward" or "unstranded"
   genome_types: ["all"]
   index_prefix: "nascent"
@@ -83,12 +82,17 @@ cell_calling:
   # Available methods: Expected_Cells, UMI_Threshold, 
   #                   EmptyDrops_FDR_X (where X is the FDR cutoff, e.g., EmptyDrops_FDR_0.001),
   #                   BarcodeRanks_Knee, BarcodeRanks_Inflection
+  #
+  # DEPRECATED: EmptyDrops methods are deprecated
+  #   - Found to be too lenient for current data, producing too many false positive cells
+  #   - BarcodeRanks methods (Knee/Inflection) are recommended instead
+  #   - EmptyDrops code is preserved but not actively maintained
   methods_to_run:
     - Expected_Cells
     - UMI_Threshold
-    # - EmptyDrops_FDR_0.001  # Commented out - too lenient for current data
-    # - EmptyDrops_FDR_0.01   # Commented out - too lenient for current data  
-    # - EmptyDrops_FDR_0.05   # Commented out - too lenient for current data
+    # - EmptyDrops_FDR_0.001  # DEPRECATED - too lenient for current data
+    # - EmptyDrops_FDR_0.01   # DEPRECATED - too lenient for current data  
+    # - EmptyDrops_FDR_0.05   # DEPRECATED - too lenient for current data
     - BarcodeRanks_Knee
     - BarcodeRanks_Inflection
   
@@ -99,7 +103,7 @@ cell_calling:
   defaults:
     expected_cells: 5000
     min_umi_threshold: 100
-    emptydrops_lower: 100
+    emptydrops_lower: 100  # DEPRECATED - kept for backwards compatibility
     saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
 
 # Barcode recovery parameters
@@ -119,7 +123,7 @@ qc_analysis:
 sublibrary_filtering:
   guide_assignment_cutoff: 5
   skip_barcode_filtering: true
-  min_umi_filter: 2
+  min_umi_filter: 100
 
 # Cell quality filtering thresholds
 # NOTE: These are currently UNUSED in the pipeline - apply_cell_filters() is never called
@@ -135,13 +139,13 @@ sublibrary_filtering:
 resources:
   # Heavy compute rules (kallisto alignment)
   alignment:
-    mem_mb: 128000  # 128GB
-    threads: 24
+    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    threads: 8      # Reduced threads for smaller datasets
   
   # Heavy memory rules (matrix operations, cell calling)
   analysis:
-    mem_mb: 256000  # 256GB
-    threads: 2
+    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    threads: 4      # Moderate parallelization for smaller datasets
   
   # Light rules (QC, stats, file operations)
   light:
@@ -168,4 +172,4 @@ analysis_ready:
   pools: []
   # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
   # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
-  min_umi_filter: 2
+  min_umi_filter: 100

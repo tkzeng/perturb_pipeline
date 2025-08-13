@@ -282,156 +282,34 @@ def get_paired_sample(sample_id, sample_type, sample_info_file):
         raise ValueError(f"Invalid sample_type: {sample_type}. Must be 'gex' or 'guide'")
 
 
-def process_single_library(lib_name, config, cell_calling_method='Expected_Cells'):
-    """
-    Process a single GEX library and return adata object with cell calling filtering.
-    
-    WARNING: THIS FUNCTION IS IN DEVELOPMENT AND NOT READY FOR PRODUCTION USE
-    This functionality is still being tested and may not work correctly.
-    
-    CELL INDEX TRANSFORMATION:
-    Input: Pure barcodes from kallisto (e.g., "AAACATCGAAACATCGAAACGATA")
-    Output: Library-prefixed format (e.g., "gex1_AAACATCGAAACATCGAAACGATA")
-    Saved as: original_gex_cell_id (for validation traceability)
+# REMOVED: process_single_library and process_guide_library functions
+# These functions had complex path construction with hardcoded fallbacks.
+# For combining sublibraries, use combine_sublibraries.py instead.
+
+
+# Functions process_single_library and process_guide_library have been removed
+# due to complex path construction and hardcoded fallbacks.
+
+
+def add_guide_data(adata_gex, adata_guide):
+    """Add separate guide data to GEX data in obsm format.
+
+    CRITICAL UNDERSTANDING:
+    - GEX and guide data come from the SAME physical cells (same cell prep)
+    - Same barcodes appear in both datasets (same cell, different molecules)
+    - After standardization, both have identical cell indices (e.g., "sample_1_BARCODE")
+    - We merge by finding cells with identical obs.index (same barcode = same physical cell)
 
     Args:
-        lib_name: GEX library name (e.g., "gex_1")
-        config: Pipeline configuration dictionary
-        cell_calling_method: Which cell calling method to use:
-            - 'Expected_Cells': Top N cells by UMI count
-            - 'UMI_Threshold': Simple UMI threshold
-            - 'EmptyDrops_FDR0001': EmptyDrops with FDR 0.001
-            - 'EmptyDrops_FDR001': EmptyDrops with FDR 0.01
-            - 'EmptyDrops_FDR005': EmptyDrops with FDR 0.05
-            - 'BarcodeRanks_Knee': Knee point method
-            - 'BarcodeRanks_Inflection': Inflection point method
+        adata_gex: GEX expression data (genes × cells)
+        adata_guide: Guide count data (guides × cells) - SAME CELLS as GEX
 
     Returns:
-        adata object with GEX expression data and library-prefixed cell indices
+        Combined AnnData with:
+        - X: GEX expression matrix
+        - obsm["guide_counts"]: Guide count matrix for same cells
+        - obs: Combined metadata from both datasets (no overwrites)
     """
-    log_print(f"Processing {lib_name} with cell calling method: {cell_calling_method}...", flush=True)
-
-    # Get pool and mapping info for this sample
-    try:
-        pool_name, mapping_name = get_sample_pool_and_mapping(lib_name)
-        log_print(f"  📋 Found sample in pool: {pool_name}, mapping: {mapping_name}")
-    except Exception as e:
-        raise RuntimeError(f"Critical error: Could not load sample info for {lib_name}: {e}. Sample info is required for proper file path resolution.") from e
-
-    # Get paths from config
-    scratch_base = os.environ.get('SCRATCH', '/scratch')
-    analysis_name = config.get('analysis_name', 'analysis')
-    scratch = os.path.join(scratch_base, analysis_name)
-    results = config['output_paths']['results_base']
-    
-    # Build path to h5ad file from kallisto output
-    # Using the all_merged combination which includes all sources
-    h5ad_path = os.path.join(scratch, lib_name, "kb_all_all_merged", "counts_unfiltered", "adata.h5ad")
-    
-    if not Path(h5ad_path).exists():
-        # Fallback to other possible paths
-        alt_paths = [
-            os.path.join(results, pool_name, lib_name, "kb_all", "counts_unfiltered", "adata.h5ad"),
-            os.path.join(scratch, lib_name, "kb_all_main_raw", "counts_unfiltered", "adata.h5ad"),
-        ]
-        for alt_path in alt_paths:
-            if Path(alt_path).exists():
-                h5ad_path = alt_path
-                break
-        else:
-            raise FileNotFoundError(f"No h5ad file found for {lib_name}. Tried: {h5ad_path} and alternatives")
-    
-    log_print(f"  📁 Loading from: {h5ad_path}")
-    
-    # Load the pre-processed adata.h5ad file
-    adata = sc.read_h5ad(h5ad_path)
-    
-    # Load cell calling results for filtering
-    cell_calling_dir = os.path.join(results, pool_name, lib_name, "cell_calling")
-    cell_barcode_file = os.path.join(cell_calling_dir, f"{lib_name}_{cell_calling_method}_cell_barcodes.txt")
-    
-    # Filter to called cells if cell calling results exist
-    if Path(cell_barcode_file).exists():
-        log_print(f"  📊 Loading cell calling results from: {cell_barcode_file}")
-        with open(cell_barcode_file) as f:
-            called_cells = set(line.strip() for line in f)
-        
-        # Filter adata to called cells
-        original_cells = adata.shape[0]
-        adata = adata[adata.obs_names.isin(called_cells)]
-        log_print(f"  🧹 Filtered to {adata.shape[0]} called cells (from {original_cells} total)")
-    else:
-        log_print(f"  ⚠️ No cell calling results found for method {cell_calling_method}, using all cells")
-    
-    # Add library identifier to cell names (lib_name_barcode format)
-    adata.obs_names = [f"{lib_name}_{barcode}" for barcode in adata.obs_names]
-
-    # Combine layers into X if they exist (nascent layers may not exist in main pipeline)
-    if "mature" in adata.layers and "ambiguous" in adata.layers and "nascent" in adata.layers:
-        adata.X = adata.layers["mature"] + adata.layers["ambiguous"] + adata.layers["nascent"]
-        log_print(f"  📊 Combined mature+ambiguous+nascent layers into X")
-    elif adata.X is not None:
-        log_print(f"  📊 Using existing X matrix (no layer combination needed)")
-    else:
-        raise RuntimeError(f"No expression data found in {lib_name}")
-
-    # Save original GEX cell IDs (CRITICAL for validation)
-    adata.obs["original_gex_cell_id"] = adata.obs.index.copy()
-
-    # Store GEX library name and standardize cell indices immediately
-    adata.obs["gex_library_name"] = lib_name
-
-    # Standardize cell indices using consistent prefix-stripping logic (same as guide processing)
-    adata.obs["barcode"] = adata.obs.index.map(lambda x: x.split("_")[-1])
-
-    # Apply same standardization logic as guide processing
-    if lib_name.startswith('gex_'):
-        standardized_lib_id = lib_name[4:]  # Remove 'gex_' prefix
-    elif lib_name.startswith('gex'):
-        standardized_lib_id = lib_name[3:]  # Remove 'gex' prefix
-    else:
-        raise ValueError(f"Invalid library name format: {lib_name}. Expected to start with 'gex_' or 'gex'")
-
-    adata.obs["standardized_lib_id"] = standardized_lib_id
-    adata.obs.index = adata.obs["standardized_lib_id"] + "_" + adata.obs["barcode"]
-    adata.obs = adata.obs.drop(columns="barcode")
-
-    log_print(f"  📊 Loaded: {adata.shape[0]} cells × {adata.shape[1]} genes")
-
-    # Map cells to biological samples using plate mapping (if mapping_name is available)
-    if 'mapping_name' in locals() and mapping_name and not pd.isna(mapping_name):
-        log_print(f"  🗺️ Applying well-based filtering using plate {mapping_name}...")
-        # TODO: This function needs config parameter when combine scripts are updated
-        # map_cells_to_samples_with_plate(adata, mapping_name, plate_maps_file, config)
-        add_sample_annotations(adata)
-
-        # Log biological sample distribution
-        if 'biological_sample' in adata.obs.columns:
-            sample_counts = adata.obs['biological_sample'].value_counts()
-            log_print(f"  📊 Biological samples found: {len(sample_counts)} unique samples")
-            for sample, count in sample_counts.head(10).items():
-                log_print(f"    {sample}: {count} cells")
-            if len(sample_counts) > 10:
-                log_print(f"    ... and {len(sample_counts) - 10} more samples")
-
-    # Add total counts if not present
-    if "total_counts" not in adata.obs.columns:
-        counts = np.array(adata.X.sum(axis=1)).flatten()
-        adata.obs["total_counts"] = counts
-    
-    # Add data type indicator (always total since we don't support nascent)
-    adata.obs["data_type"] = "total"
-    adata.obs["cell_calling_method"] = cell_calling_method
-
-    log_print(f"  ✅ Successfully processed {lib_name}")
-    return adata
-
-
-def process_guide_library(lib_name, config, target_cells):
-    """Process a guide library and return guide count data filtered to target cells.
-    
-    WARNING: THIS FUNCTION IS IN DEVELOPMENT AND NOT READY FOR PRODUCTION USE
-    This functionality is still being tested and may not work correctly.
     
     CELL INDEX TRANSFORMATION:
     Input: Pure barcodes from kallisto (e.g., "AAACATCGAAACATCGCACAATTG") - SAME CELLS as GEX
@@ -479,28 +357,13 @@ def process_guide_library(lib_name, config, target_cells):
     adata = sc.read_h5ad(h5ad_path)
 
     # Add library identifier to cell names (lib_name_barcode format)
+    # Keep the full library name without stripping prefix (matching GEX approach)
     adata.obs_names = [f"{lib_name}_{barcode}" for barcode in adata.obs_names]
 
-    # Save original guide cell IDs and add metadata
-    adata.obs["original_guide_cell_id"] = adata.obs.index.copy()
-    adata.obs["guide_library_name"] = lib_name  # Save guide library name separately
+    # Add metadata
+    adata.obs["guide_library_name"] = lib_name
     counts = np.array(adata.X.sum(axis=1)).flatten()
     adata.obs["guide_umi_counts"] = counts
-
-    # Standardize cell indices (same logic as GEX processing)
-    adata.obs["barcode"] = adata.obs.index.map(lambda x: x.split("_")[-1])
-    
-    # Apply same standardization logic as GEX processing
-    if lib_name.startswith('guide_'):
-        standardized_lib_id = lib_name[6:]  # Remove 'guide_' prefix
-    elif lib_name.startswith('guide'):
-        standardized_lib_id = lib_name[5:]  # Remove 'guide' prefix
-    else:
-        raise ValueError(f"Invalid guide library name format: {lib_name}. Expected to start with 'guide_' or 'guide'")
-    
-    adata.obs["standardized_lib_id"] = standardized_lib_id
-    adata.obs.index = adata.obs["standardized_lib_id"] + "_" + adata.obs["barcode"]
-    adata.obs = adata.obs.drop(columns="barcode")
 
     # Subset to target cells (filtered GEX cells)
     target_mask = adata.obs.index.isin(target_cells)
@@ -585,7 +448,7 @@ def add_guide_data(adata_gex, adata_guide):
     log_print(f"✅ Added guide_counts matrix (zeros for {n_gex_cells - len(guide_indices)} cells)")
 
     # Transfer guide-specific obs columns (fill with NaN for missing cells)
-    guide_specific_columns = ["original_guide_cell_id", "guide_library_name", "guide_umi_counts"]
+    guide_specific_columns = ["guide_library_name", "guide_umi_counts"]
     for col in guide_specific_columns:
         if col in adata_guide_common.obs.columns:
             # Vectorized transfer: use reindex to align guide data to GEX cells

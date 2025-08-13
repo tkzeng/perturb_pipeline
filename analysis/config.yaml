@@ -130,17 +130,42 @@ sublibrary_filtering:
   skip_barcode_filtering: true
 
 # Analysis-ready file configuration
-# WARNING: THIS FEATURE IS IN DEVELOPMENT AND NOT READY FOR USE
-# The analysis-ready functionality is still being tested and may not work correctly
-analysis_ready:
-  # Cell calling method to use for creating analysis-ready files
+# Combined sublibraries configuration
+combined_sublibraries:
+  # Cell calling method to use for combining sublibraries
   # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
   #          BarcodeRanks_Knee, BarcodeRanks_Inflection
   cell_calling_method: "BarcodeRanks_Knee"
-  # Output directory for analysis-ready files (relative to results_base)
-  output_dir: "analysis_ready"
+  # Output directory for combined files (relative to results_base)
+  output_dir: "combined_sublibraries"
   # Pools to include (empty list means all pools)
   pools: []
-  # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
+  # Default minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
   # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
-  min_umi_filter: 2
+  min_umi_filter: 100
+  # Default mitochondrial percentage cutoff
+  mito_cutoff: 20
+  # Optional: Per-sample filter overrides (YAML file path)
+  # Format: 
+  #   sample_id:
+  #     min_umi_filter: 200
+  #     mito_cutoff: 15
+  # TODO: Implement generation of per-sample filter YAML files in QC scripts
+  #       Based on sample-specific quality metrics (UMI distributions, mito%, etc.)
+  per_sample_filters_file: null  # Set to path if needed
+
+# Perturbation preprocessing configuration
+preprocessing:
+  target_genes: ["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"]  # Target genes for analysis
+  use_gpu: false  # Use GPU acceleration (requires RAPIDS)
+  target_clusters: 3  # Target number of clusters for leiden clustering
+  n_hvgs: 2000  # Number of highly variable genes
+  clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
+  
+  # Stratification for perturbation analysis
+  stratification:
+    column: "condition"
+    values: ["72hr_wt", "168hr_wt"]
+  
+  # Non-targeting guide identifiers
+  non_targeting_strings: ["non-targeting", "non.targeting"]

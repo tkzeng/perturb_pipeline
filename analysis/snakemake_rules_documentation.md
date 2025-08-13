@@ -62,7 +62,7 @@ Calculates comprehensive read mapping statistics from kallisto outputs. Integrat
 
 ### `rule cell_calling_analysis`
 **Lines: 749-790**  
-Performs comprehensive cell calling analysis using seven different methods: 1) Expected cell count (top N barcodes), 2) Simple UMI threshold, 3-5) EmptyDrops with FDR thresholds of 0.001, 0.01, and 0.05, 6) BarcodeRanks knee point, 7) BarcodeRanks inflection point. Runs DropletUtils (EmptyDrops and barcodeRanks) via R script on the pre-filtered matrix from filter_and_annotate_sublibrary. Calculates percentage of UMIs captured by each method and saves results including cell barcodes for each approach.
+Performs comprehensive cell calling analysis using multiple methods: 1) Expected cell count (top N barcodes), 2) Simple UMI threshold, 3) BarcodeRanks knee point, 4) BarcodeRanks inflection point, and optionally EmptyDrops with various FDR thresholds (DEPRECATED - EmptyDrops is not recommended as it tends to be too lenient). Runs DropletUtils (BarcodeRanks and optionally EmptyDrops) via R script on the pre-filtered matrix from filter_and_annotate_sublibrary. Calculates percentage of UMIs captured by each method and saves results including cell barcodes for each approach.
 
 ### `rule cell_calling_plots`
 **Lines: 792-834**  
@@ -114,7 +114,7 @@ Generates comprehensive visualizations for consolidated QC metrics from TSV file
 - **Horizontal point plots**: For most metrics (sample/biological sample level), sorted by value with sample labels. Both linear and log scale versions generated.
 - **Scatter plots**: For cell-based metrics (e.g., UMIs/genes per cell) plotted against mean reads per cell, and for group-level metrics (e.g., duplication rate) plotted against total reads. Shows relationship between sequencing depth and metric values.
 - **Heatmaps**: For well-level metrics, displayed as 96-well plate layout with color-coded values.
-- **Plot organization**: Separates outputs into "consolidated_general" (metrics without cell calling methods) and "consolidated_cell_based" (metrics specific to cell calling methods like EmptyDrops).
+- **Plot organization**: Separates outputs into "consolidated_general" (metrics without cell calling methods) and "consolidated_cell_based" (metrics specific to cell calling methods like BarcodeRanks).
 - **Parallel processing**: Uses multiprocessing to generate plots efficiently.
 - **Smart filtering**: Skips certain metrics that aren't informative as plots, avoids log scale for percentage/count metrics.
 

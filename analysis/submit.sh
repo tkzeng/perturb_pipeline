@@ -50,31 +50,40 @@ DEFAULT_ARGS=(
     # List of allowed rules - comment out any rules you want to skip
     --allowed-rules \
         all \
-        count_reads \
-        kallisto_gex \
-        kite_index \
-        kallisto_guide \
-        kallisto_gex_subsampled \
-        kallisto_guide_subsampled \
-        generate_combined_whitelist \
-        inspect_bus_files \
-        merge_all_fastqs \
-        filter_and_annotate_sublibrary \
-        fastp_qc \
-        calculate_read_statistics \
-        cell_calling_analysis \
-        cell_calling_plots \
-        calculate_qc_metrics_stratified \
-        umi_saturation_analysis \
-        umi_saturation_analysis_guide \
+        # STAGE 1: Input processing and counting \
+        #count_reads \
+        #calculate_pool_statistics \
+        # STAGE 2: Undetermined recovery and barcode correction \
         #check_undetermined_barcodes \
         #create_undetermined_fastq \
         #barcode_recovery \
+        #merge_all_fastqs \
+        # STAGE 3: Reference preparation \
+        #kite_index \
+        #generate_combined_whitelist \
+        # STAGE 4: Alignment \
+        #kallisto_gex \
+        #kallisto_guide \
+        #kallisto_gex_subsampled \
+        #kallisto_guide_subsampled \
+        # STAGE 5: Post-alignment processing \
+        #inspect_bus_files \
+        filter_and_annotate_sublibrary \
+        #calculate_read_statistics \
+        # STAGE 6: QC and analysis \
+        #fastp_qc \
+        cell_calling_analysis \
+        cell_calling_plots \
+        calculate_qc_metrics_stratified \
+        #umi_saturation_analysis \
+        #umi_saturation_analysis_guide \
+        # STAGE 7: Consolidation and visualization \
         consolidate_qc_metrics \
         visualize_consolidated_qc \
-        process_pool_metrics \
+        #process_pool_metrics \
+        # STAGE 8: Final outputs \
         generate_qc_report \
-        calculate_pool_statistics
+        #combine_sublibraries
 )
 
 # If user didn't specify --jobs, add default

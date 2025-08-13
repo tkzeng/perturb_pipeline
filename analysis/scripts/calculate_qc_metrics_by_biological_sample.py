@@ -796,12 +796,27 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
     print("Per-cell distribution plots completed")
 
 
-def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot_dir, source, processing, pool=None):
-    """Create scatter plots of UMI counts vs number of genes, colored by pct mitochondrial."""
+def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot_dir, 
+                              x_values_func, x_label,
+                              y_values_func, y_label,
+                              metric_name, plot_title_suffix):
+    """Generic function to create scatter plots colored by pct mitochondrial.
+    
+    Args:
+        adata: AnnData object
+        cell_barcodes: Dictionary of cell barcodes by method
+        sample_id: Sample identifier
+        stratify_by: How to stratify the data
+        plot_dir: Directory to save plots
+        x_values_func: Function to calculate x-axis values from data subset
+        x_label: Label for x-axis
+        y_values_func: Function to calculate y-axis values from data subset
+        y_label: Label for y-axis
+        metric_name: Name for output directory
+        plot_title_suffix: Additional text for plot title
+    """
     from scipy.stats import pearsonr
     import matplotlib.cm as cm
-    
-    print("\nCreating UMI vs genes scatter plots colored by % mitochondrial...")
     
     # Ensure plot directory exists
     plot_dir = Path(plot_dir)
@@ -809,7 +824,6 @@ def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot
     
     # Use all available methods from cell_barcodes
     methods = sorted(cell_barcodes.keys())
-    print(f"  Creating scatter plots for {len(methods)} methods: {', '.join(methods)}")
     
     for method in methods:
         # Get cells for this method
@@ -861,29 +875,29 @@ def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot
             ax = axes[i]
             
             # Get the data
-            total_counts = data.obs['total_counts'].values
-            n_genes = data.obs['n_genes_by_counts'].values
+            x_values = x_values_func(data)
+            y_values = y_values_func(data)
             pct_mito = data.obs['pct_counts_mt'].values
             
             # Sample if too many points
             max_points = 10000
-            if len(total_counts) > max_points:
+            if len(x_values) > max_points:
                 # Random sample while preserving distribution
-                sample_idx = np.random.choice(len(total_counts), size=max_points, replace=False)
-                total_counts_plot = total_counts[sample_idx]
-                n_genes_plot = n_genes[sample_idx]
+                sample_idx = np.random.choice(len(x_values), size=max_points, replace=False)
+                x_values_plot = x_values[sample_idx]
+                y_values_plot = y_values[sample_idx]
                 pct_mito_plot = pct_mito[sample_idx]
-                plot_label = f"(showing {max_points:,} of {len(total_counts):,} cells)"
+                plot_label = f"(showing {max_points:,} of {len(x_values):,} cells)"
             else:
-                total_counts_plot = total_counts
-                n_genes_plot = n_genes
+                x_values_plot = x_values
+                y_values_plot = y_values
                 pct_mito_plot = pct_mito
-                plot_label = f"({len(total_counts):,} cells)"
+                plot_label = f"({len(x_values):,} cells)"
             
             # Create scatter plot
             scatter = ax.scatter(
-                total_counts_plot,
-                n_genes_plot,
+                x_values_plot,
+                y_values_plot,
                 c=pct_mito_plot,
                 cmap='plasma',
                 s=1,
@@ -897,8 +911,8 @@ def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot
             ax.set_yscale('log')
             
             # Labels and title
-            ax.set_xlabel('Total UMI Counts')
-            ax.set_ylabel('Number of Genes Detected')
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
             ax.set_title(f'{label}\n{plot_label}')
             
             # Add colorbar
@@ -906,11 +920,11 @@ def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot
             cbar.set_label('% Mitochondrial', rotation=270, labelpad=15)
             
             # Calculate and add correlation
-            if len(total_counts) > 1:
+            if len(x_values) > 1:
                 # Calculate on log-transformed data
-                log_counts = np.log10(total_counts + 1)
-                log_genes = np.log10(n_genes + 1)
-                corr, _ = pearsonr(log_counts, log_genes)
+                log_x = np.log10(x_values + 1)
+                log_y = np.log10(y_values + 1)
+                corr, _ = pearsonr(log_x, log_y)
                 ax.text(0.05, 0.95, f'r = {corr:.3f}', 
                        transform=ax.transAxes, fontsize=10,
                        verticalalignment='top',
@@ -924,14 +938,15 @@ def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot
             axes[j].set_visible(False)
         
         # Overall title
-        fig.suptitle(f'UMI Counts vs Number of Genes (colored by % Mitochondrial)\n{method} - {sample_id}', 
-                     fontsize=14)
+        title = f'{x_label} vs {y_label} (colored by % Mitochondrial)\n{method} - {sample_id}'
+        if plot_title_suffix:
+            title += f' - {plot_title_suffix}'
+        fig.suptitle(title, fontsize=14)
         
         # Adjust layout
         plt.tight_layout()
         
         # Save with clean directory structure (no separate correlation subdirectory)
-        metric_name = "umi_vs_genes_scatter"
         metric_dir = plot_dir / metric_name / method / stratify_by / "linear"
         metric_dir.mkdir(parents=True, exist_ok=True)
         
@@ -940,10 +955,47 @@ def plot_umi_vs_genes_scatter(adata, cell_barcodes, sample_id, stratify_by, plot
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         plt.close()
         
-        
-        print(f"    Saved {filename}")
+        print(f"    Saved {metric_name}/{method}/{stratify_by}/linear/{filename}")
+
+
+def plot_umi_vs_guides_scatter(adata, cell_barcodes, sample_id, stratify_by, plot_dir, source, processing, guide_cutoffs, pool=None):
+    """Create scatter plots of UMI counts vs number of guides at different cutoffs, colored by pct mitochondrial."""
+    print("\nCreating UMI vs guides scatter plots colored by % mitochondrial...")
+    print(f"  Creating scatter plots for {len(cell_barcodes)} methods with {len(guide_cutoffs)} cutoffs: {guide_cutoffs}")
     
-    print("UMI vs genes scatter plots completed")
+    # Check if guide data exists
+    if 'guide_counts' not in adata.obsm:
+        print("  No guide data found in adata.obsm, skipping guide scatter plots")
+        return
+    
+    # Create plots for each cutoff
+    for cutoff in guide_cutoffs:
+        print(f"\n  Processing cutoff={cutoff}...")
+        
+        def calculate_guides_at_cutoff(data):
+            """Calculate number of guides detected at the specified cutoff."""
+            guide_counts = data.obsm['guide_counts']
+            # Convert to binary (1 if count >= cutoff, 0 otherwise)
+            binary_guides = (guide_counts >= cutoff).astype(int)
+            # Sum guides per cell
+            guides_per_cell = np.array(binary_guides.sum(axis=1)).flatten()
+            return guides_per_cell
+        
+        _plot_umi_scatter_generic(
+            adata=adata,
+            cell_barcodes=cell_barcodes,
+            sample_id=sample_id,
+            stratify_by=stratify_by,
+            plot_dir=plot_dir,
+            x_values_func=lambda data: data.obs['total_counts'].values,
+            x_label='Total UMI Counts',
+            y_values_func=calculate_guides_at_cutoff,
+            y_label=f'Number of Guides Detected (cutoff={cutoff})',
+            metric_name=f'umi_vs_guides_scatter_cutoff{cutoff}',
+            plot_title_suffix=f'Cutoff={cutoff}'
+        )
+    
+    print("\nUMI vs guides scatter plots completed")
 
 
 def main():
@@ -1146,8 +1198,82 @@ def main():
                                pool=args.pool, read_stats=combined_read_stats)
     
     # Generate UMI vs genes scatter plots
-    plot_umi_vs_genes_scatter(adata, cell_barcodes, args.sample_id, args.stratify_by,
-                             plot_dir, source, processing, pool=args.pool)
+    print("\nCreating UMI vs genes scatter plots colored by % mitochondrial...")
+    print(f"  Creating scatter plots for {len(cell_barcodes)} methods: {', '.join(sorted(cell_barcodes.keys()))}")
+    
+    _plot_umi_scatter_generic(
+        adata=adata,
+        cell_barcodes=cell_barcodes,
+        sample_id=args.sample_id,
+        stratify_by=args.stratify_by,
+        plot_dir=plot_dir,
+        x_values_func=lambda data: data.obs['total_counts'].values,
+        x_label='Total UMI Counts',
+        y_values_func=lambda data: data.obs['n_genes_by_counts'].values,
+        y_label='Number of Genes Detected',
+        metric_name='umi_vs_genes_scatter',
+        plot_title_suffix=''
+    )
+    
+    print("UMI vs genes scatter plots completed")
+    
+    # Generate UMI vs guides scatter plots for each cutoff
+    if 'guide_counts' in adata.obsm:
+        plot_umi_vs_guides_scatter(adata, cell_barcodes, args.sample_id, args.stratify_by,
+                                 plot_dir, source, processing, guide_cutoffs, pool=args.pool)
+        
+        # Generate GEX UMIs vs Guide UMIs scatter plot
+        print("\nCreating GEX UMIs vs Guide UMIs scatter plots colored by % mitochondrial...")
+        print(f"  Creating scatter plots for {len(cell_barcodes)} methods: {', '.join(sorted(cell_barcodes.keys()))}")
+        
+        _plot_umi_scatter_generic(
+            adata=adata,
+            cell_barcodes=cell_barcodes,
+            sample_id=args.sample_id,
+            stratify_by=args.stratify_by,
+            plot_dir=plot_dir,
+            x_values_func=lambda data: data.obs['total_counts'].values,
+            x_label='Total UMI Counts',
+            y_values_func=lambda data: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
+            y_label='Guide UMIs',
+            metric_name='gex_vs_guide_umis_scatter',
+            plot_title_suffix=''
+        )
+        
+        print("GEX vs Guide UMIs scatter plots completed")
+        
+        # Generate Guide UMIs vs Number of Guides scatter plots for each cutoff
+        print("\nCreating Guide UMIs vs Number of Guides scatter plots colored by % mitochondrial...")
+        print(f"  Creating scatter plots for {len(cell_barcodes)} methods with {len(guide_cutoffs)} cutoffs: {guide_cutoffs}")
+        
+        for cutoff in guide_cutoffs:
+            print(f"  Processing cutoff={cutoff}...")
+            
+            def calculate_guides_at_cutoff(data):
+                """Calculate number of guides detected at the specified cutoff."""
+                guide_counts = data.obsm['guide_counts']
+                # Convert to binary (1 if count >= cutoff, 0 otherwise)
+                binary_guides = (guide_counts >= cutoff).astype(int)
+                # Sum guides per cell
+                guides_per_cell = np.array(binary_guides.sum(axis=1)).flatten()
+                return guides_per_cell
+            
+            # Use the now-generic scatter plot function with guide UMIs as x-axis
+            _plot_umi_scatter_generic(
+                adata=adata,
+                cell_barcodes=cell_barcodes,
+                sample_id=args.sample_id,
+                stratify_by=args.stratify_by,
+                plot_dir=plot_dir,
+                x_values_func=lambda data: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
+                x_label='Guide UMIs',
+                y_values_func=calculate_guides_at_cutoff,
+                y_label=f'Number of Guides Detected (cutoff={cutoff})',
+                metric_name=f'guide_umis_vs_num_guides_scatter_cutoff{cutoff}',
+                plot_title_suffix=f'Cutoff={cutoff}'
+            )
+        
+        print("Guide UMIs vs Number of Guides scatter plots completed")
     
     # Clean up memory
     del adata

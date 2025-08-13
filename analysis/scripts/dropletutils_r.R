@@ -3,6 +3,9 @@
 # DropletUtils cell calling (EmptyDrops and BarcodeRanks) 
 # Works with kallisto count matrix outputs
 #
+# NOTE: EmptyDrops is DEPRECATED. Use BarcodeRanks methods instead.
+# EmptyDrops code is preserved for backwards compatibility but is not actively maintained.
+#
 
 suppressPackageStartupMessages({
   library(DropletUtils)
@@ -77,6 +80,8 @@ is_cell_knee <- rep(FALSE, ncol(count_matrix))
 is_cell_inflection <- rep(FALSE, ncol(count_matrix))
 knee_threshold <- NA
 inflection_threshold <- NA
+fitted_values <- rep(NA, ncol(count_matrix))  # Store fitted spline values
+br_rank <- rep(NA, ncol(count_matrix))  # Store BarcodeRanks rank values
 
 # Run barcodeRanks if requested
 if (args$run_barcoderanks) {
@@ -99,6 +104,12 @@ if (args$run_barcoderanks) {
   # Extract knee and inflection points
   knee_threshold <- metadata(br_out)$knee
   inflection_threshold <- metadata(br_out)$inflection
+  
+  # Extract fitted values and ranks for each barcode
+  # Match barcodes to br_out results
+  barcode_idx <- match(barcodes, rownames(br_out))
+  fitted_values[!is.na(barcode_idx)] <- br_out$fitted[barcode_idx[!is.na(barcode_idx)]]
+  br_rank[!is.na(barcode_idx)] <- br_out$rank[barcode_idx[!is.na(barcode_idx)]]
   
   cat("BarcodeRanks knee threshold:", knee_threshold, "\n")
   cat("BarcodeRanks inflection threshold:", inflection_threshold, "\n")
@@ -133,7 +144,8 @@ if (args$run_emptydrops) {
     stop("Error: --fdr_cutoffs must be provided when --run_emptydrops is set")
   }
   fdr_thresholds <- as.numeric(strsplit(args$fdr_cutoffs, ",")[[1]])
-  cat("\nRunning emptyDrops analysis...\n")
+  cat("\nWARNING: EmptyDrops is DEPRECATED. Use BarcodeRanks methods instead.\n")
+  cat("Running emptyDrops analysis...\n")
   cat("  Lower threshold:", args$emptydrops_lower, "\n")
   cat("  Testing FDR thresholds:", paste(fdr_thresholds, collapse=", "), "\n")
   
@@ -193,6 +205,8 @@ emptydrops_results <- data.frame(
   barcode = barcodes,
   total_counts = total_counts,
   rank = rank(-total_counts, ties.method = "first"),  # Add barcode rank
+  br_rank = br_rank,  # BarcodeRanks rank (averaged for ties)
+  br_fitted = fitted_values,  # BarcodeRanks fitted spline values
   log_prob = e_out$LogProb,
   p_value = e_out$PValue,
   fdr = e_out$FDR,
