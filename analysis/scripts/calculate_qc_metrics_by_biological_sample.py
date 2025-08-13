@@ -40,13 +40,81 @@ import scipy.sparse
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
+from scipy.stats import median_abs_deviation
+from sklearn.mixture import GaussianMixture
 # Import shared guide utility function
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.pipeline_utils import calculate_guides_per_cell, calculate_guide_metrics_for_cells
 
 
-def plot_violin_with_mean(data, x, y, order, ax, log_scale=False):
+def calculate_distribution_statistics(values):
+    """Calculate statistical metrics for a distribution.
+    
+    Args:
+        values: Array of values
+        
+    Returns:
+        dict: Dictionary with statistical metrics
+    """
+    values_clean = values[~np.isnan(values)]
+    
+    if len(values_clean) == 0:
+        return {}
+    
+    # Basic statistics
+    median = np.median(values_clean)
+    mad = median_abs_deviation(values_clean)
+    
+    # Percentiles
+    percentiles = np.percentile(values_clean, [5, 25, 75, 95, 99])
+    
+    # Mixture model (2 components)
+    mixture_stats = {}
+    try:
+        # Reshape for sklearn
+        X = values_clean.reshape(-1, 1)
+        
+        # Fit mixture model with 2 components
+        gmm = GaussianMixture(n_components=2, random_state=42)
+        gmm.fit(X)
+        
+        if gmm.converged_:
+            # Get component means and weights
+            means = gmm.means_.flatten()
+            weights = gmm.weights_
+            stds = np.sqrt(gmm.covariances_.flatten())
+            
+            # Sort by mean value
+            sorted_idx = np.argsort(means)
+            
+            mixture_stats = {
+                'converged': True,
+                'low_component_mean': means[sorted_idx[0]],
+                'low_component_weight': weights[sorted_idx[0]],
+                'low_component_std': stds[sorted_idx[0]],
+                'high_component_mean': means[sorted_idx[1]],
+                'high_component_weight': weights[sorted_idx[1]],
+                'high_component_std': stds[sorted_idx[1]]
+            }
+    except Exception as e:
+        mixture_stats = {'converged': False, 'error': str(e)}
+    
+    return {
+        'median': median,
+        'mad': mad,
+        'median_plus_2mad': median + 2 * mad,
+        'median_plus_3mad': median + 3 * mad,
+        'p05': percentiles[0],
+        'p25': percentiles[1], 
+        'p75': percentiles[2],
+        'p95': percentiles[3],
+        'p99': percentiles[4],
+        'mixture': mixture_stats
+    }
+
+
+def plot_violin_with_mean(data, x, y, order, ax, log_scale=False, show_statistics=False, metric_type=None):
     """Helper function to create violin plot with mean markers.
     
     Args:
@@ -56,6 +124,8 @@ def plot_violin_with_mean(data, x, y, order, ax, log_scale=False):
         order: Order of groups on x-axis
         ax: Matplotlib axis to plot on
         log_scale: Whether to use log scale
+        show_statistics: Whether to add statistical lines (only for mitochondrial percentage)
+        metric_type: Type of metric being plotted ('pct_mito' for mitochondrial percentage)
         
     Returns:
         dict: Fraction of non-zero values for each group
@@ -96,7 +166,71 @@ def plot_violin_with_mean(data, x, y, order, ax, log_scale=False):
         labels.append(f"{group}\n({frac:.0%} non-zero)")
     ax.set_xticklabels(labels)
     
+    # Add statistical lines if requested and this is mitochondrial percentage
+    if show_statistics and metric_type == 'pct_mito' and len(plot_data) > 0:
+        # Calculate statistics on all data (not just non-zero)
+        all_values = data[y].values
+        stats = calculate_distribution_statistics(all_values)
+        
+        if stats:
+            # Add horizontal lines for key statistics
+            ax.axhline(y=stats['median'], color='blue', linestyle='-', linewidth=2, alpha=0.8, label=f"Median ({stats['median']:.1f}%)")
+            ax.axhline(y=stats['median_plus_2mad'], color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f"Median+2×MAD ({stats['median_plus_2mad']:.1f}%)")
+            ax.axhline(y=stats['median_plus_3mad'], color='red', linestyle=':', linewidth=1.5, alpha=0.8, label=f"Median+3×MAD ({stats['median_plus_3mad']:.1f}%)")
+            
+            # Add percentile lines
+            ax.axhline(y=stats['p95'], color='purple', linestyle='-', linewidth=1, alpha=0.6, label=f"95th percentile ({stats['p95']:.1f}%)")
+            ax.axhline(y=stats['p99'], color='purple', linestyle='--', linewidth=1, alpha=0.6, label=f"99th percentile ({stats['p99']:.1f}%)")
+            
+            # Add mixture model components if converged
+            if stats['mixture'].get('converged', False):
+                mix = stats['mixture']
+                ax.axhline(y=mix['low_component_mean'], color='green', linestyle='-', linewidth=1, alpha=0.7, 
+                          label=f"Low mito component ({mix['low_component_mean']:.1f}%, w={mix['low_component_weight']:.2f})")
+                ax.axhline(y=mix['high_component_mean'], color='darkred', linestyle='-', linewidth=1, alpha=0.7,
+                          label=f"High mito component ({mix['high_component_mean']:.1f}%, w={mix['high_component_weight']:.2f})")
+            
+            # Add legend
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    
     return nonzero_fractions
+
+
+def save_qc_cutoffs_yaml(adata, output_path):
+    """Save QC cutoffs to YAML file.
+    
+    Args:
+        adata: AnnData object with QC metrics
+        output_path: Path to save YAML file
+    """
+    # Calculate mitochondrial cutoffs
+    mito_values = adata.obs['pct_counts_mt'].values
+    mito_stats = calculate_distribution_statistics(mito_values)
+    
+    # Create cutoffs dictionary
+    cutoffs = {
+        'mitochondrial': {
+            'median': round(mito_stats['median'], 2),
+            'mad': round(mito_stats['mad'], 2),
+            'median_plus_2mad': round(mito_stats['median_plus_2mad'], 2),
+            'median_plus_3mad': round(mito_stats['median_plus_3mad'], 2),
+            'percentile_5': round(mito_stats['p05'], 2),
+            'percentile_25': round(mito_stats['p25'], 2),
+            'percentile_75': round(mito_stats['p75'], 2),
+            'percentile_95': round(mito_stats['p95'], 2),
+            'percentile_99': round(mito_stats['p99'], 2)
+        }
+    }
+    
+    # Add mixture model results if available
+    if mito_stats['mixture'].get('converged', False):
+        mix = mito_stats['mixture']
+        cutoffs['mitochondrial']['mixture_low_mean'] = round(mix['low_component_mean'], 2)
+        cutoffs['mitochondrial']['mixture_high_mean'] = round(mix['high_component_mean'], 2)
+    
+    # Save to YAML
+    with open(output_path, 'w') as f:
+        yaml.dump(cutoffs, f, default_flow_style=False, sort_keys=False)
 
 
 
@@ -510,7 +644,11 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 
                 # Make violin plot
                 # Use helper function for violin plot
-                plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups, ax, log_scale=(scale_type == 'log'))
+                show_stats = (file_suffix == 'pct_mito')  # Only show statistics for mitochondrial percentage
+                plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups, ax, 
+                                    log_scale=(scale_type == 'log'), 
+                                    show_statistics=show_stats, 
+                                    metric_type=file_suffix)
             
                 # Customize plot
                 ax.set_xlabel(stratify_by.replace('_', ' ').title())
@@ -1015,6 +1153,7 @@ def main():
                         help='Data source (main, undetermined, or all)')
     parser.add_argument('--processing', required=True, choices=['raw', 'trimmed', 'recovered', 'merged'],
                         help='Processing state (raw, trimmed, recovered, or merged)')
+    parser.add_argument('--qc-cutoffs-output', help='Output YAML file for QC cutoffs')
     
     args = parser.parse_args()
     
@@ -1274,6 +1413,11 @@ def main():
             )
         
         print("Guide UMIs vs Number of Guides scatter plots completed")
+    
+    # Save QC cutoffs to YAML if requested
+    if args.qc_cutoffs_output:
+        print(f"\nSaving QC cutoffs to: {args.qc_cutoffs_output}")
+        save_qc_cutoffs_yaml(adata, args.qc_cutoffs_output)
     
     # Clean up memory
     del adata

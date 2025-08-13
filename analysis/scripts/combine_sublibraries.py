@@ -95,14 +95,14 @@ def filter_files_by_pools(h5ad_files, barcode_files, pools):
     return filtered_h5ad, filtered_barcode
 
 
-def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, filter_params):
+def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, qc_cutoffs, mito_cutoff_key=None):
     """Load an h5ad file and filter it to called cells
     
     Args:
         h5ad_path: Path to annotated h5ad file
         barcode_path: Path to cell barcode file
         cell_calling_method: Cell calling method used for filtering
-        filter_params: Dict with 'min_umi_filter' and 'mito_cutoff' keys
+        qc_cutoffs: Dict with QC cutoffs
         
     Returns:
         Filtered AnnData object with library-prefixed cell names
@@ -124,19 +124,14 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, filter
     adata = adata[adata.obs_names.isin(called_cells)]
     log_print(f"  Cell calling filter {sample_id}: {adata.shape[0]} cells (from {original_cells} total)")
     
-    # Apply UMI threshold filter
-    min_umi_filter = filter_params['min_umi_filter']
-    if min_umi_filter > 0:
-        pre_umi_cells = adata.shape[0]
-        adata = adata[adata.obs['total_counts'] >= min_umi_filter]
-        log_print(f"  UMI filter {sample_id}: {adata.shape[0]} cells (removed {pre_umi_cells - adata.shape[0]} with <{min_umi_filter} UMIs)")
-    
     # Apply mitochondrial percentage filter
-    mito_cutoff = filter_params['mito_cutoff']
-    if mito_cutoff > 0 and 'pct_counts_mt' in adata.obs.columns:
-        pre_mito_cells = adata.shape[0]
-        adata = adata[adata.obs['pct_counts_mt'] < mito_cutoff]
-        log_print(f"  Mito filter {sample_id}: {adata.shape[0]} cells (removed {pre_mito_cells - adata.shape[0]} with ≥{mito_cutoff}% mito)")
+    if mito_cutoff_key and 'mitochondrial' in qc_cutoffs and 'pct_counts_mt' in adata.obs.columns:
+        if mito_cutoff_key in qc_cutoffs['mitochondrial']:
+            mito_cutoff = qc_cutoffs['mitochondrial'][mito_cutoff_key]
+            if mito_cutoff > 0:
+                pre_mito_cells = adata.shape[0]
+                adata = adata[adata.obs['pct_counts_mt'] < mito_cutoff]
+                log_print(f"  Mito filter {sample_id}: {adata.shape[0]} cells (removed {pre_mito_cells - adata.shape[0]} with ≥{mito_cutoff}% mito using {mito_cutoff_key})")
     
     # Add library prefix to cell names
     adata.obs_names = [f"{sample_id}_{barcode}" for barcode in adata.obs_names]
@@ -153,7 +148,7 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, filter
 # Output is a single combined h5ad file with both GEX and guide data
 
 
-def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file, pools=""):
+def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file, pools="", mito_cutoff_key=None):
     """Main function to combine libraries into a single file
     
     Args:
@@ -180,12 +175,12 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
     combined_gex = None
     
     for i, (h5ad_path, barcode_path, filter_file) in enumerate(zip(h5ad_files, barcode_files, filter_files)):
-        # Load filtering parameters from YAML file
+        # Load QC cutoffs from YAML file
         with open(filter_file) as f:
-            filter_params = yaml.safe_load(f)
+            qc_cutoffs = yaml.safe_load(f)
         
         # Load and filter current library
-        adata = load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, filter_params)
+        adata = load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, qc_cutoffs, mito_cutoff_key)
         
         if combined_gex is None:
             # First library becomes the base
@@ -236,30 +231,23 @@ def main():
     parser = argparse.ArgumentParser(description='Combine sublibraries into a single file')
     parser.add_argument('--h5ad-files', required=True, nargs='+', help='List of annotated h5ad file paths')
     parser.add_argument('--barcode-files', required=True, nargs='+', help='List of cell barcode file paths')
+    parser.add_argument('--filter-files', required=True, nargs='+', help='List of QC cutoffs YAML file paths')
     parser.add_argument('--cell-calling-method', required=True, help='Cell calling method used')
     parser.add_argument('--output', required=True, help='Output combined h5ad file path')
     parser.add_argument('--pools', default='', help='Space-separated pool names to process (empty means all pools)')
-    parser.add_argument('--min-umi-filter', type=int, default=100, help='Minimum UMI count threshold')
-    parser.add_argument('--mito-cutoff', type=float, default=20, help='Maximum mitochondrial percentage threshold')
-    parser.add_argument('--per-sample-filters', help='YAML file with per-sample filter parameters')
+    parser.add_argument('--mito-cutoff-key', help='Which mitochondrial cutoff to use from QC cutoffs YAML')
     args = parser.parse_args()
     
-    # Load per-sample filters if provided
-    per_sample_filters = None
-    if args.per_sample_filters:
-        with open(args.per_sample_filters) as f:
-            per_sample_filters = yaml.safe_load(f)
     
     # Run the combination
     combine_sublibraries(
         h5ad_files=args.h5ad_files,
         barcode_files=args.barcode_files,
+        filter_files=args.filter_files,
         cell_calling_method=args.cell_calling_method,
         output_file=args.output,
         pools=args.pools,
-        min_umi_filter=args.min_umi_filter,
-        mito_cutoff=args.mito_cutoff,
-        per_sample_filters=per_sample_filters
+        mito_cutoff_key=args.mito_cutoff_key
     )
 
 
