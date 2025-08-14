@@ -39,13 +39,12 @@ guide_to_gex, gex_to_guide = get_guide_gex_pairings(config['sample_info_file'])
 def load_sample_info_wrapper():
     return load_sample_info(config)
 
-rule all_preprocessed:
-    """Target rule for downstream preprocessing pipeline"""
+rule all:
+    """Target rule for downstream analysis pipeline"""
     input:
         # All preprocessed files based on configuration
-        expand(f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{{source}}_{{processing}}.h5ad",
-               source=["main", "all"],
-               processing=["raw", "merged"])
+        [f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{source}_{processing}.h5ad"
+         for source, processing in config['combinations']]
 
 
 # =============================================================================
@@ -83,8 +82,7 @@ rule combine_sublibraries:
         combined=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/combined_{{source}}_{{processing}}.h5ad"
     params:
         cell_calling_method=config['combined_sublibraries']['cell_calling_method'],
-        pools=" ".join(config['combined_sublibraries']['pools']) if config['combined_sublibraries']['pools'] else "",
-        qc_method=config['combined_sublibraries'].get('qc_method', 'gmm_2d_posterior_75')
+        qc_method=config['combined_sublibraries']['qc_method']
     log:
         f"{LOGS}/combine_sublibraries_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -101,7 +99,6 @@ rule combine_sublibraries:
             --filter-files {input.filter_files} \
             --cell-calling-method {params.cell_calling_method} \
             --output {output.combined} \
-            --pools {params.pools} \
             --qc-method {params.qc_method} \
             &> {log}
         """
@@ -125,13 +122,14 @@ rule standard_analyses:
     output:
         preprocessed=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{{source}}_{{processing}}.h5ad"
     params:
-        target_genes=config.get("preprocessing", {}).get("target_genes", ["TP53", "CDKN1A"]),
-        use_gpu=config.get("preprocessing", {}).get("use_gpu", False),
-        target_clusters=config.get("preprocessing", {}).get("target_clusters", 3),
-        stratification_column=config.get("preprocessing", {}).get("stratification", {}).get("column", "condition"),
-        stratification_values=config.get("preprocessing", {}).get("stratification", {}).get("values", ["72hr_wt", "168hr_wt"]),
-        non_targeting_strings=config.get("preprocessing", {}).get("non_targeting_strings", ["non-targeting", "non.targeting"]),
-        outdir=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessing_{{source}}_{{processing}}"
+        target_genes=" ".join(config["standard_analyses"]["target_genes"]),
+        use_gpu=config["standard_analyses"]["use_gpu"],
+        target_clusters=config["standard_analyses"]["target_clusters"],
+        guide_cutoff=config["standard_analyses"]["guide_assignment_cutoff"],
+        stratification_column=config["standard_analyses"]["de_analysis_subsets"]["column"],
+        stratification_values=" ".join(config["standard_analyses"]["de_analysis_subsets"]["values"]),
+        non_targeting_strings=" ".join(config["standard_analyses"]["non_targeting_strings"]),
+        outdir=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/standard_analyses_{{source}}_{{processing}}"
     wildcard_constraints:
         source="main|undetermined|all",
         processing="raw|recovered|merged"
@@ -144,16 +142,35 @@ rule standard_analyses:
         """
         mkdir -p {params.outdir}
         
-        python {input.script} \
+        # Build command
+        CMD="python {input.script} \
             --input-file {input.combined} \
             --outdir {params.outdir} \
             --final-output-file {output.preprocessed} \
-            --target-genes {params.target_genes} \
             --target-clusters {params.target_clusters} \
-            --stratification-column {params.stratification_column} \
-            --stratification-values {params.stratification_values} \
-            --non-targeting-strings {params.non_targeting_strings} \
-            --cutoff 5 \
-            $([[ "{params.use_gpu}" == "True" ]] && echo "--use-gpu" || echo "") \
-            &> {log}
+            --cutoff {params.guide_cutoff}"
+        
+        # Add optional parameters if they exist
+        if [ -n "{params.target_genes}" ]; then
+            CMD="$CMD --target-genes {params.target_genes}"
+        fi
+        
+        if [ -n "{params.stratification_column}" ]; then
+            CMD="$CMD --stratification-column {params.stratification_column}"
+        fi
+        
+        if [ -n "{params.stratification_values}" ]; then
+            CMD="$CMD --stratification-values {params.stratification_values}"
+        fi
+        
+        if [ -n "{params.non_targeting_strings}" ]; then
+            CMD="$CMD --non-targeting-strings {params.non_targeting_strings}"
+        fi
+        
+        if [ "{params.use_gpu}" = "True" ]; then
+            CMD="$CMD --use-gpu"
+        fi
+        
+        # Execute command
+        eval $CMD &> {log}
         """

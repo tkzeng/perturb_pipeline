@@ -12,7 +12,11 @@ slurm:
   partition: "pritch,engreitz,hns,owners,normal"  # Comma-separated list of partitions
   account: "pritch"  # SLURM account for job submission
 
-analysis:
+# Processing combinations to run
+combinations:  # Which source/processing combinations to run
+  - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
+
+kallisto:
   # Chemistry v2:
   # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111
   # kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
@@ -21,11 +25,6 @@ analysis:
   # Amplicon: NNNNNNNNNN33333333ATGAGGGGTCAG22222222TCCAACCACCTC11111111
   # kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"
   kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"  # Using v2 chemistry
-
-
-  # IT IS OPTIONAL TO ADJUST THESE -> -> ->
-  combinations:  # Which source/processing combinations to run
-    - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
   strand: "forward"  # Options: "forward" or "unstranded"
   genome_types: ["all"]
   index_prefix: "nascent"
@@ -174,21 +173,24 @@ combined_sublibraries:
   output_dir: "combined_sublibraries"
   # Pools to include (empty list means all pools)
   pools: []
-  # Mitochondrial cutoff key for filtering
-  mito_cutoff_key: "median_mad_2"
+  # QC filtering method to use (from qc_cell_lists.tsv columns)
+  # Options: gmm_2d_posterior_75, gmm_2d_posterior_50, gmm_2d_posterior_90,
+  #          median_plus_2mad, median_plus_3mad, percentile_95, percentile_99
+  qc_method: "gmm_2d_posterior_75"
 
-# Perturbation preprocessing configuration
-preprocessing:
-  target_genes: ["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"]  # Target genes for analysis
+# Standard analyses configuration
+standard_analyses:
+  target_genes: []  # Empty list for no target gene analysis, or ["TP53", "CDKN1A"] for specific genes
   use_gpu: false  # Use GPU acceleration (requires RAPIDS)
   target_clusters: 3  # Target number of clusters for leiden clustering
+  guide_assignment_cutoff: 5  # Threshold for guide assignment in target gene analysis
   n_hvgs: 2000  # Number of highly variable genes
   clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
   
-  # Stratification for perturbation analysis
-  stratification:
-    column: "condition"
-    values: ["72hr_wt", "168hr_wt"]
+  # Subset cells for differential expression analysis
+  de_analysis_subsets:
+    column: ""  # Empty string to analyze all cells together, or "condition" for specific column
+    values: []  # Empty list when no subsetting, or ["condition1", "condition2"] for specific values
   
   # Non-targeting guide identifiers
-  non_targeting_strings: ["non-targeting", "non.targeting"]
+  non_targeting_strings: []  # Empty list for no non-targeting analysis, or ["non-targeting", "non.targeting"]

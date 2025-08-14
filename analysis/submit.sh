@@ -74,6 +74,7 @@ DEFAULT_ARGS=(
         #fastp_qc \
         #cell_calling_analysis \
         cell_calling_plots \
+        generate_qc_cell_lists \
         calculate_qc_metrics_stratified \
         #umi_saturation_analysis \
         #umi_saturation_analysis_guide \
@@ -83,7 +84,10 @@ DEFAULT_ARGS=(
         #process_pool_metrics \
         # STAGE 8: Final outputs \
         generate_qc_report \
-        #combine_sublibraries
+        # DOWNSTREAM PIPELINE (from downstream.smk) \
+        # Note: To run these, use: snakemake -s downstream.smk ... \
+        combine_sublibraries \
+        standard_analyses
 )
 
 # If user didn't specify --jobs, add default

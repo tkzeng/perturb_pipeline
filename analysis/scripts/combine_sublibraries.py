@@ -64,35 +64,6 @@ def get_sample_filter_params(sample_id, default_min_umi, default_mito_cutoff, pe
         }
 
 
-def filter_files_by_pools(h5ad_files, barcode_files, pools):
-    """Filter file lists by pool names if specified
-    
-    Args:
-        h5ad_files: List of h5ad file paths
-        barcode_files: List of barcode file paths
-        pools: Space-separated string of pool names to keep (empty for all)
-    
-    Returns:
-        Tuple of (filtered_h5ad_files, filtered_barcode_files)
-    """
-    if not pools or pools.strip() == "":
-        return h5ad_files, barcode_files
-    
-    pool_list = pools.strip().split()
-    log_print(f"Filtering to pools: {pool_list}")
-    
-    # Extract sample IDs and filter by pools that appear in paths
-    filtered_h5ad = []
-    filtered_barcode = []
-    
-    for h5ad_path, barcode_path in zip(h5ad_files, barcode_files):
-        # Check if any pool name appears in the path
-        if any(pool in str(h5ad_path) for pool in pool_list):
-            filtered_h5ad.append(h5ad_path)
-            filtered_barcode.append(barcode_path)
-    
-    log_print(f"Filtered to {len(filtered_h5ad)} files from specified pools")
-    return filtered_h5ad, filtered_barcode
 
 
 def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_lists_path, qc_method='gmm_2d_posterior_75'):
@@ -145,9 +116,6 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_l
     # Add library prefix to cell names
     adata.obs_names = [f"{sample_id}_{barcode}" for barcode in adata.obs_names]
     
-    # Add cell calling method metadata
-    adata.obs["cell_calling_method"] = cell_calling_method
-    
     # Note: Library metadata (sample_id, pool) already added by sublibrary_annotation.py
     
     return adata
@@ -157,7 +125,7 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_l
 # Output is a single combined h5ad file with both GEX and guide data
 
 
-def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file, pools="", qc_method='gmm_2d_posterior_75'):
+def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file, qc_method='gmm_2d_posterior_75'):
     """Main function to combine libraries into a single file
     
     Args:
@@ -166,7 +134,6 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
         filter_files: List of per-sample QC cell list TSV files
         cell_calling_method: Cell calling method used
         output_file: Output path for combined h5ad file
-        pools: Space-separated pool names to filter (empty for all)
         qc_method: QC method column to use for filtering
     """
     
@@ -176,8 +143,6 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
     log_print(f"Input files: {len(h5ad_files)} h5ad files")
     log_print(f"Filter files: {len(filter_files)} per-sample cell list files")
     
-    # Filter by pools if specified
-    h5ad_files, barcode_files = filter_files_by_pools(h5ad_files, barcode_files, pools)
     
     # Step 1: Load, filter, and incrementally concatenate libraries
     log_print("\n📥 STEP 1: Loading and filtering libraries with memory optimization...")
@@ -210,6 +175,13 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
     
     log_print(f"\n🔗 STEP 2: Final combined shape: {combined_gex.shape}")
     
+    # Add filtering metadata to uns (dataset-level metadata)
+    combined_gex.uns['filtering_metadata'] = {
+        'cell_calling_method': cell_calling_method,
+        'qc_filtering_method': qc_method
+    }
+    log_print(f"📝 Added filtering metadata: cell_calling={cell_calling_method}, qc_method={qc_method}")
+    
     # Log biological sample distribution if available
     if 'biological_sample' in combined_gex.obs.columns:
         sample_counts = combined_gex.obs['biological_sample'].value_counts()
@@ -241,7 +213,6 @@ def main():
     parser.add_argument('--filter-files', required=True, nargs='+', help='List of QC cutoffs YAML file paths')
     parser.add_argument('--cell-calling-method', required=True, help='Cell calling method used')
     parser.add_argument('--output', required=True, help='Output combined h5ad file path')
-    parser.add_argument('--pools', default='', help='Space-separated pool names to process (empty means all pools)')
     parser.add_argument('--qc-method', default='gmm_2d_posterior_75', 
                        help='QC method column to use for filtering (default: gmm_2d_posterior_75)')
     args = parser.parse_args()
@@ -254,7 +225,6 @@ def main():
         filter_files=args.filter_files,
         cell_calling_method=args.cell_calling_method,
         output_file=args.output,
-        pools=args.pools,
         qc_method=args.qc_method
     )
 

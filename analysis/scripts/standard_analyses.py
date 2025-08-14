@@ -146,7 +146,7 @@ def _score_gene_list(adata_main, gene_list, score_name, use_gpu=False):
 
 def apply_stratification(adata, base_samples, stratify_by, stratify_values):
     """Apply stratification strategy to sample selection."""
-    if stratify_by is None:
+    if stratify_by is None or stratify_by == "":
         return {"all": base_samples}
 
     if stratify_by not in adata.obs.columns:
@@ -165,7 +165,7 @@ def apply_stratification(adata, base_samples, stratify_by, stratify_values):
     return stratified_samples
 
 
-def target_gene_strategy(adata, group_def, cutoff=5, non_targeting_strings=["non-targeting", "non.targeting"]):
+def target_gene_strategy(adata, group_def, cutoff, non_targeting_strings):
     """Strategy for target gene groupings: target_genes vs non_targeting"""
     # Get guide names and counts from obsm
     guide_names = adata.uns["guide_names"]
@@ -406,7 +406,7 @@ def perform_de_and_scoring(adata, group_config, strat_samples, strat_label, use_
     return all_created_scores
 
 
-def calculate_unified_scores(adata, scoring_config, use_gpu=False, cutoff=5, non_targeting_strings=["non-targeting", "non.targeting"]):
+def calculate_unified_scores(adata, scoring_config, use_gpu, cutoff, non_targeting_strings):
     """Simplified unified scoring system with strategy functions"""
     log_print("🚀 Starting simplified unified scoring system...")
 
@@ -569,60 +569,41 @@ def save_umap_plots(adata, outdir):
 
 
 def prepare_final_dataset(adata, final_output_file):
-    """Prepare final dataset using unified data with combined layers."""
+    """Prepare final dataset for downstream analysis."""
 
-    # Check if we have the combined layers (created earlier in pipeline)
-    required_combined_layers = ["total_counts", "nascent_counts"]
-    missing_combined_layers = [layer for layer in required_combined_layers if layer not in adata.layers]
+    log_print("🧬 Preparing final dataset")
 
-    if missing_combined_layers:
-        available_layers = list(adata.layers.keys())
-        raise RuntimeError(f"CRITICAL: Required combined layers missing: {missing_combined_layers}. "
-                          f"Available layers: {available_layers}. "
-                          f"Combined layers should have been created earlier in load_and_combine_data().")
+    # Use the current data (already has total counts in X and all analysis)
+    adata_final = adata.copy()
 
-    if len(missing_combined_layers) == 0:
-        log_print("🧬 Using combined layers created earlier in pipeline")
+    # X contains raw counts from combine_sublibraries
+    log_print("✅ Using raw counts in X from combine_sublibraries")
 
-        # Use the current data (already has total counts in X and all analysis)
-        adata_final = adata.copy()
+    # Add metadata describing the data structure
+    adata_final.uns["data_description"] = {
+        "X_contains": "raw total RNA counts",
+        "normalization": "Analysis performed on normalized subsets (target_sum=1e4 + log1p), but X contains raw counts",
+        "data_type": "single-cell perturbation experiment",
+        "created_by": "standard_analyses.py prepare_final_dataset()"
+    }
 
-        # Combined layers already exist from load_and_combine_data()
-        # X contains raw counts, layers contain the same raw counts
-        log_print("✅ Combined layers already present: total_counts and nascent_counts")
+    # Remove .raw if it exists
+    adata_final.raw = None
 
-        # Add metadata describing the data structure
-        adata_final.uns["data_description"] = {
-            "X_contains": "raw total RNA counts (mature + ambiguous + nascent fractions)",
-            "total_counts_layer": "raw total RNA counts (mature + ambiguous + nascent fractions) - same as X",
-            "nascent_counts_layer": "raw nascent RNA counts (from nascent libraries)",
-            "normalization": "Analysis performed on normalized subsets (target_sum=1e4 + log1p), but X contains raw counts",
-            "data_type": "single-cell perturbation experiment with total and nascent RNA",
-            "created_by": "preprocess_perturb.py prepare_final_dataset()"
-        }
+    # Clean up obs columns (remove guide data now stored in obsm)
+    guide_cols = [col for col in adata_final.obs.columns if "_guide" in col]
+    # Get target gene columns from the uns metadata
+    target_gene_names = adata_final.uns.get("guide_target_names", [])
+    target_cols = [col for col in target_gene_names if col in adata_final.obs.columns]
+    cols_to_remove = guide_cols + target_cols
+    if cols_to_remove:
+        log_print(f"🧽 Removing {len(cols_to_remove)} guide columns from obs (now in obsm): {cols_to_remove[:5]}...")
+        adata_final.obs = adata_final.obs.drop(columns=cols_to_remove)
 
-        # Remove .raw since we now have raw counts in layers
-        adata_final.raw = None
-
-
-        # Clean up obs columns (remove guide data now stored in obsm)
-        guide_cols = [col for col in adata_final.obs.columns if "_guide" in col]
-        # Get target gene columns from the uns metadata
-        target_gene_names = adata_final.uns.get("guide_target_names", [])
-        target_cols = [col for col in target_gene_names if col in adata_final.obs.columns]
-        cols_to_remove = guide_cols + target_cols
-        if cols_to_remove:
-            log_print(f"🧽 Removing {len(cols_to_remove)} guide columns from obs (now in obsm): {cols_to_remove[:5]}...")
-            adata_final.obs = adata_final.obs.drop(columns=cols_to_remove)
-
-        log_print(f"🎆 Created final dataset with shape: {adata_final.shape}")
-        log_print(f"📋 Layers: {list(adata_final.layers.keys())}")
-        log_print(f"📊 Total counts range: {adata_final.layers['total_counts'].sum(axis=1).min():.0f} - {adata_final.layers['total_counts'].sum(axis=1).max():.0f}")
-        log_print(f"📊 Nascent counts range: {adata_final.layers['nascent_counts'].sum(axis=1).min():.0f} - {adata_final.layers['nascent_counts'].sum(axis=1).max():.0f}")
-
-    else:
-        # This should never happen due to the check above, but keeping for completeness
-        raise RuntimeError(f"Required combined layers not found. Available layers: {list(adata.layers.keys())}. Expected: {required_combined_layers}")
+    log_print(f"🎆 Created final dataset with shape: {adata_final.shape}")
+    log_print(f"📋 Layers: {list(adata_final.layers.keys())}")
+    if adata_final.X is not None:
+        log_print(f"📊 Total counts range: {adata_final.X.sum(axis=1).min():.0f} - {adata_final.X.sum(axis=1).max():.0f}")
 
 
     log_print(f"💾 Writing final dataset to {final_output_file}...")
@@ -632,23 +613,21 @@ def prepare_final_dataset(adata, final_output_file):
     return adata_final
 
 
-def main(cutoff=5, target_genes=["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"],
-         input_file=None,
-         outdir="../analysis_results",
-         final_output_file="./adata.ready_for_train.h5ad",
-         use_gpu=False, gpu_threshold_gb=2.0, hvg_reference_file=None, target_clusters=3,
-         stratification_column="condition", stratification_values=["72hr_wt", "168hr_wt"],
-         non_targeting_strings=["non-targeting", "non.targeting"]):
+def main(cutoff, input_file, outdir, final_output_file, 
+         use_gpu, target_clusters,
+         target_genes=None, stratification_column=None, 
+         stratification_values=None, non_targeting_strings=None,
+         gpu_threshold_gb=2.0, hvg_reference_file=None):
     """Main processing pipeline for unified data format.
 
     Parameters:
     -----------
     cutoff : int, default=5
         Threshold for guide assignment
-    target_genes : list, default=["TP53", "CDKN1A"]
-        List of target genes to analyze
+    target_genes : list, optional
+        List of target genes to analyze. If None, no target gene analysis is performed
     input_file : str
-        Path to input h5ad file with annotated unified data (includes nascent layers)
+        Path to input h5ad file with annotated data from combine_sublibraries
     outdir : str
         Output directory for plots and results
     final_output_file : str
@@ -747,21 +726,34 @@ def main(cutoff=5, target_genes=["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", 
         log_print(f"📊 Using existing guide counts: mean = {adata_expressed.obs['n_guides_total'].mean():.2f}")
 
         # Configure unified scoring system
-        scoring_config = {
-            "target_genes": {
-                "groups": target_genes + [["TP53", "CDKN1A"]],  # Individual genes + TP53/CDKN1A pair only
+        scoring_config = {}
+        
+        # Only add target_genes config if target genes are specified
+        if target_genes:
+            # Create list of individual genes and optionally gene pairs
+            groups = list(target_genes)  # Individual genes
+            # If there are at least 2 genes, add them as a pair for combined analysis
+            if len(target_genes) >= 2:
+                groups.append(target_genes[:2])  # Add first two genes as a pair
+            
+            scoring_config["target_genes"] = {
+                "groups": groups,
                 "strategy": "target_gene_strategy",
-                "stratify_by": stratification_column,
-                "stratify_values": stratification_values
-            },
-            "guide_moi": {
-                "groups": ["guide_category"],
-                "strategy": "guide_strategy"
-            },
-            "leiden_clusters": {
-                "groups": [2, 3, 4],
-                "strategy": "cluster_strategy"
+                "stratify_by": stratification_column if stratification_column else None,
+                "stratify_values": stratification_values if stratification_values else []
             }
+        
+        # Always include guide MOI analysis
+        scoring_config["guide_moi"] = {
+            "groups": ["guide_category"],
+            "strategy": "guide_strategy"
+        }
+        
+        # Use target_clusters to determine range of clusters to test
+        # Test from 2 up to target_clusters + 1
+        scoring_config["leiden_clusters"] = {
+            "groups": list(range(2, target_clusters + 2)),
+            "strategy": "cluster_strategy"
         }
 
         # DEBUG: Save data before DE/scoring for debugging
@@ -775,7 +767,9 @@ def main(cutoff=5, target_genes=["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", 
         log_print(f"🔍 DEBUG: adata_expressed.X data type: {type(adata_expressed.X)}")
         
         # Run unified scoring system
-        adata_expressed = calculate_unified_scores(adata_expressed, scoring_config, use_gpu=gpu_enabled, cutoff=cutoff, non_targeting_strings=non_targeting_strings)
+        # Use empty list if non_targeting_strings is None
+        nt_strings = non_targeting_strings if non_targeting_strings else []
+        adata_expressed = calculate_unified_scores(adata_expressed, scoring_config, use_gpu=gpu_enabled, cutoff=cutoff, non_targeting_strings=nt_strings)
 
         # Clean GPU memory after unified scoring
         if gpu_enabled:
@@ -884,13 +878,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Preprocess perturbation data for training')
     parser.add_argument('--cutoff', type=int, default=5,
                         help='Threshold for guide assignment (default: 5)')
-    parser.add_argument('--target-genes', nargs='+', default=["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"],
-                        help='Target genes to analyze (default: TP53 CDKN1A FDPS RABGGTA MRPL34 QARS)')
+    parser.add_argument('--target-genes', nargs='+',
+                        help='Target genes to analyze')
     parser.add_argument('--input-file', required=True,
                         help='Input combined h5ad file from combine_sublibraries')
-    parser.add_argument('--outdir', default="../analysis_results",
+    parser.add_argument('--outdir', required=True,
                         help='Output directory for plots and results')
-    parser.add_argument('--final-output-file', default="./adata.ready_for_train.h5ad",
+    parser.add_argument('--final-output-file', required=True,
                         help='Path for final h5ad output ready for training')
     parser.add_argument('--force', action='store_true',
                         help='Force regeneration of output files even if they exist')
@@ -902,12 +896,12 @@ if __name__ == "__main__":
                         help='Reference h5ad file to compute HVGs from (e.g., adata_all.annot.ultima.filt.h5ad)')
     parser.add_argument('--target-clusters', type=int, default=3,
                         help='Target number of leiden clusters to identify (default: 3)')
-    parser.add_argument('--stratification-column', default="condition",
-                        help='Column for stratification analysis (default: condition)')
-    parser.add_argument('--stratification-values', nargs='+', default=["72hr_wt", "168hr_wt"],
-                        help='Values for stratification analysis (default: 72hr_wt 168hr_wt)')
-    parser.add_argument('--non-targeting-strings', nargs='+', default=["non-targeting", "non.targeting"],
-                        help='Strings to identify non-targeting guides (default: non-targeting non.targeting)')
+    parser.add_argument('--stratification-column',
+                        help='Column for stratification analysis')
+    parser.add_argument('--stratification-values', nargs='+',
+                        help='Values for stratification analysis')
+    parser.add_argument('--non-targeting-strings', nargs='+',
+                        help='Strings to identify non-targeting guides')
     args = parser.parse_args()
 
     # Note: Snakemake handles dependency tracking, so we always regenerate when called
@@ -917,15 +911,15 @@ if __name__ == "__main__":
     # Run the pipeline
     adata_final = main(
         cutoff=args.cutoff,
-        target_genes=args.target_genes,
         input_file=args.input_file,
         outdir=args.outdir,
         final_output_file=args.final_output_file,
         use_gpu=args.use_gpu,
-        gpu_threshold_gb=args.gpu_threshold_gb,
-        hvg_reference_file=args.hvg_reference_file,
         target_clusters=args.target_clusters,
+        target_genes=args.target_genes,
         stratification_column=args.stratification_column,
         stratification_values=args.stratification_values,
-        non_targeting_strings=args.non_targeting_strings
+        non_targeting_strings=args.non_targeting_strings,
+        gpu_threshold_gb=args.gpu_threshold_gb,
+        hvg_reference_file=args.hvg_reference_file
     )

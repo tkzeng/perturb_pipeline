@@ -333,7 +333,7 @@ rule kallisto_gex:
         processing="raw|recovered|merged"
     params:
         out=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}",
-        strand=config["analysis"]["strand"]
+        strand=config["kallisto"]["strand"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
@@ -383,7 +383,7 @@ rule kallisto_guide:
         processing="raw|recovered|merged"
     params:
         out=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}",
-        strand=config["analysis"]["strand"]
+        strand=config["kallisto"]["strand"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
@@ -423,7 +423,7 @@ rule kallisto_gex_subsampled:
         fraction="0\\.1|0\\.25|0\\.5|0\\.75"
     params:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_all",
-        strand=config["analysis"]["strand"]
+        strand=config["kallisto"]["strand"]
     threads:
         config["resources"]["alignment"]["threads"]
     resources:
@@ -467,7 +467,7 @@ rule kallisto_guide_subsampled:
         fraction="0\\.1|0\\.25|0\\.5|0\\.75"
     params:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide",
-        strand=config["analysis"]["strand"]
+        strand=config["kallisto"]["strand"]
     threads:
         config["resources"]["alignment"]["threads"]
     resources:
@@ -702,6 +702,34 @@ rule cell_calling_plots:
         """
 
 
+rule generate_qc_cell_lists:
+    """Generate QC cell filtering decisions based on mitochondrial and expression metrics.
+    
+    Creates a TSV file with boolean filtering decisions for multiple QC methods
+    and continuous GMM posterior probabilities for visualization.
+    """
+    input:
+        h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
+        script="scripts/generate_qc_cell_lists.py"
+    output:
+        qc_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv"
+    params:
+        config_file=workflow.configfiles[0]
+    log:
+        f"{LOGS}/generate_qc_cell_lists_{{sample_id}}_{{source}}_{{processing}}.log"
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    shell:
+        """
+        python {input.script} \
+            --h5ad {input.h5ad} \
+            --output {output.qc_lists} \
+            --config {params.config_file} &> {log}
+        """
+
+
 rule calculate_qc_metrics_stratified:
     """Calculate comprehensive QC metrics at three stratification levels"""
     input:
@@ -713,13 +741,14 @@ rule calculate_qc_metrics_stratified:
         read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_{{source}}_{{processing}}_read_statistics.tsv",
         # Read statistics for paired guide sample
         guide_stats=lambda wildcards: f"{RESULTS}/{gex_to_guide[wildcards.sample_id]}/qc/{gex_to_guide[wildcards.sample_id]}_guide_{wildcards.source}_{wildcards.processing}_read_statistics.tsv",
+        # QC cell lists (for plotting only)
+        qc_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv",
         script="scripts/calculate_qc_metrics_by_biological_sample.py"
     output:
         qc_metrics_sample=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_sample.tsv",
         qc_metrics_bio=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_biological_sample.tsv",
         qc_metrics_well=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_well.tsv",
-        plots_dir=directory(f"{RESULTS}/qc_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}"),
-        qc_cell_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv"
+        plots_dir=directory(f"{RESULTS}/qc_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}")
     log:
         f"{LOGS}/qc_metrics_stratified_{{sample_id}}_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -745,7 +774,7 @@ rule calculate_qc_metrics_stratified:
             --pool {params.pool} \
             --source {wildcards.source} \
             --processing {wildcards.processing} \
-            --qc-cell-lists-output {output.qc_cell_lists} &> {log}
+            --qc-cell-lists {input.qc_lists} &> {log}
         
         # Calculate by biological sample
         python3 {input.script} \
