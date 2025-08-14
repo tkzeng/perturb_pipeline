@@ -95,14 +95,15 @@ def filter_files_by_pools(h5ad_files, barcode_files, pools):
     return filtered_h5ad, filtered_barcode
 
 
-def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, qc_cutoffs, mito_cutoff_key=None):
-    """Load an h5ad file and filter it to called cells
+def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_lists_path, qc_method='gmm_2d_posterior_75'):
+    """Load an h5ad file and filter it to called cells that pass QC
     
     Args:
         h5ad_path: Path to annotated h5ad file
-        barcode_path: Path to cell barcode file
+        barcode_path: Path to cell barcode file  
         cell_calling_method: Cell calling method used for filtering
-        qc_cutoffs: Dict with QC cutoffs
+        cell_lists_path: Path to TSV file with QC cell lists
+        qc_method: Column name in cell lists to use for filtering
         
     Returns:
         Filtered AnnData object with library-prefixed cell names
@@ -124,14 +125,22 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, qc_cut
     adata = adata[adata.obs_names.isin(called_cells)]
     log_print(f"  Cell calling filter {sample_id}: {adata.shape[0]} cells (from {original_cells} total)")
     
-    # Apply mitochondrial percentage filter
-    if mito_cutoff_key and 'mitochondrial' in qc_cutoffs and 'pct_counts_mt' in adata.obs.columns:
-        if mito_cutoff_key in qc_cutoffs['mitochondrial']:
-            mito_cutoff = qc_cutoffs['mitochondrial'][mito_cutoff_key]
-            if mito_cutoff > 0:
-                pre_mito_cells = adata.shape[0]
-                adata = adata[adata.obs['pct_counts_mt'] < mito_cutoff]
-                log_print(f"  Mito filter {sample_id}: {adata.shape[0]} cells (removed {pre_mito_cells - adata.shape[0]} with ≥{mito_cutoff}% mito using {mito_cutoff_key})")
+    # Apply QC filtering using cell lists
+    if not os.path.exists(cell_lists_path):
+        raise FileNotFoundError(f"Cell lists file not found: {cell_lists_path}")
+    
+    cell_lists_df = pd.read_csv(cell_lists_path, sep='\t')
+    
+    if qc_method not in cell_lists_df.columns:
+        available_methods = [col for col in cell_lists_df.columns if col != 'barcode']
+        raise ValueError(f"QC method '{qc_method}' not found in cell lists file. "
+                        f"Available methods: {', '.join(available_methods)}")
+    
+    # Get cells that pass QC
+    qc_pass = cell_lists_df[cell_lists_df[qc_method] == True]['barcode'].tolist()
+    pre_qc_cells = adata.shape[0]
+    adata = adata[adata.obs_names.isin(qc_pass)]
+    log_print(f"  QC filter {sample_id}: {adata.shape[0]} cells (removed {pre_qc_cells - adata.shape[0]} using {qc_method})")
     
     # Add library prefix to cell names
     adata.obs_names = [f"{sample_id}_{barcode}" for barcode in adata.obs_names]
@@ -148,22 +157,24 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, qc_cut
 # Output is a single combined h5ad file with both GEX and guide data
 
 
-def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file, pools="", mito_cutoff_key=None):
+def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file, pools="", qc_method='gmm_2d_posterior_75'):
     """Main function to combine libraries into a single file
     
     Args:
         h5ad_files: List of annotated h5ad file paths
         barcode_files: List of cell barcode file paths
-        filter_files: List of per-sample filter parameter YAML files
+        filter_files: List of per-sample QC cell list TSV files
         cell_calling_method: Cell calling method used
         output_file: Output path for combined h5ad file
         pools: Space-separated pool names to filter (empty for all)
+        qc_method: QC method column to use for filtering
     """
     
     log_print("🧬 Combining filtered sublibraries")
     log_print(f"Cell calling method: {cell_calling_method}")
+    log_print(f"QC filtering method: {qc_method}")
     log_print(f"Input files: {len(h5ad_files)} h5ad files")
-    log_print(f"Filter files: {len(filter_files)} per-sample YAML files")
+    log_print(f"Filter files: {len(filter_files)} per-sample cell list files")
     
     # Filter by pools if specified
     h5ad_files, barcode_files = filter_files_by_pools(h5ad_files, barcode_files, pools)
@@ -175,12 +186,8 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
     combined_gex = None
     
     for i, (h5ad_path, barcode_path, filter_file) in enumerate(zip(h5ad_files, barcode_files, filter_files)):
-        # Load QC cutoffs from YAML file
-        with open(filter_file) as f:
-            qc_cutoffs = yaml.safe_load(f)
-        
         # Load and filter current library
-        adata = load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, qc_cutoffs, mito_cutoff_key)
+        adata = load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, filter_file, qc_method)
         
         if combined_gex is None:
             # First library becomes the base
@@ -223,7 +230,7 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
     log_print(f"✅ File written in {write_time:.2f} seconds")
     
     log_print("\n✅ Combined sublibrary file created successfully!")
-    log_print(f"  Combined: {output_file} ({combined_gex.shape[0]} cells × {combined_gex.shape[1]} genes)")
+    log_print(f"  Combined: {output_file} ({combined_gex.shape[0]} cells x {combined_gex.shape[1]} genes)")
     log_print(f"  Guide data: Available in obsm['guide_counts'] ({len(combined_gex.uns.get('guide_names', []))} guides)")
 
 
@@ -235,7 +242,8 @@ def main():
     parser.add_argument('--cell-calling-method', required=True, help='Cell calling method used')
     parser.add_argument('--output', required=True, help='Output combined h5ad file path')
     parser.add_argument('--pools', default='', help='Space-separated pool names to process (empty means all pools)')
-    parser.add_argument('--mito-cutoff-key', help='Which mitochondrial cutoff to use from QC cutoffs YAML')
+    parser.add_argument('--qc-method', default='gmm_2d_posterior_75', 
+                       help='QC method column to use for filtering (default: gmm_2d_posterior_75)')
     args = parser.parse_args()
     
     
@@ -247,7 +255,7 @@ def main():
         cell_calling_method=args.cell_calling_method,
         output_file=args.output,
         pools=args.pools,
-        mito_cutoff_key=args.mito_cutoff_key
+        qc_method=args.qc_method
     )
 
 

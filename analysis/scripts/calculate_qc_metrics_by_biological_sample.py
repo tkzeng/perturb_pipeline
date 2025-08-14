@@ -42,79 +42,131 @@ import seaborn as sns
 from datetime import datetime
 from scipy.stats import median_abs_deviation
 from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
 # Import shared guide utility function
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.pipeline_utils import calculate_guides_per_cell, calculate_guide_metrics_for_cells
 
 
-def calculate_distribution_statistics(values):
-    """Calculate statistical metrics for a distribution.
+def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
+    """Calculate 2D GMM statistics using mitochondrial % and gene-UMI residuals.
     
     Args:
-        values: Array of values
+        mito_values: Array of mitochondrial percentages
+        umi_counts: Array of UMI counts 
+        gene_counts: Array of gene counts
         
     Returns:
-        dict: Dictionary with statistical metrics
+        dict: Dictionary with 2D GMM statistics and cutoffs
     """
-    values_clean = values[~np.isnan(values)]
+    # Remove NaN values
+    mask = ~(np.isnan(mito_values) | np.isnan(umi_counts) | np.isnan(gene_counts))
+    mito_clean = mito_values[mask]
+    umi_clean = umi_counts[mask]
+    gene_clean = gene_counts[mask]
     
-    if len(values_clean) == 0:
-        return {}
+    if len(mito_clean) < 100:  # Need minimum cells for meaningful analysis
+        return {'converged': False, 'error': 'Insufficient data points'}
     
-    # Basic statistics
-    median = np.median(values_clean)
-    mad = median_abs_deviation(values_clean)
+    # Log transform (using log1p to handle zeros)
+    log_umis = np.log1p(umi_clean)
+    log_genes = np.log1p(gene_clean)
     
-    # Percentiles
-    percentiles = np.percentile(values_clean, [5, 25, 75, 95, 99])
+    # Fit linear regression: log(genes) ~ log(UMIs)
+    lr = LinearRegression()
+    lr.fit(log_umis.reshape(-1, 1), log_genes)
+    predicted_log_genes = lr.predict(log_umis.reshape(-1, 1))
     
-    # Mixture model (2 components)
-    mixture_stats = {}
-    try:
-        # Reshape for sklearn
-        X = values_clean.reshape(-1, 1)
-        
-        # Fit mixture model with 2 components
-        gmm = GaussianMixture(n_components=2, random_state=42)
-        gmm.fit(X)
-        
-        if gmm.converged_:
-            # Get component means and weights
-            means = gmm.means_.flatten()
-            weights = gmm.weights_
-            stds = np.sqrt(gmm.covariances_.flatten())
-            
-            # Sort by mean value
-            sorted_idx = np.argsort(means)
-            
-            mixture_stats = {
-                'converged': True,
-                'low_component_mean': means[sorted_idx[0]],
-                'low_component_weight': weights[sorted_idx[0]],
-                'low_component_std': stds[sorted_idx[0]],
-                'high_component_mean': means[sorted_idx[1]],
-                'high_component_weight': weights[sorted_idx[1]],
-                'high_component_std': stds[sorted_idx[1]]
+    # Calculate residuals
+    residuals = log_genes - predicted_log_genes
+    
+    # Prepare features for 2D GMM
+    features = np.column_stack([mito_clean, residuals])
+    
+    # Standardize features
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    
+    # Fit 2D GMM
+    gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
+    gmm.fit(features_scaled)
+    
+    if not gmm.converged_:
+        return {'converged': False, 'error': 'GMM did not converge'}
+    
+    # Get predictions
+    labels = gmm.predict(features_scaled)
+    posteriors = gmm.predict_proba(features_scaled)
+    
+    # Identify which component is "compromised" (high mito, low residual)
+    # Component with higher mean mito (in scaled space) is likely compromised
+    means_original = scaler.inverse_transform(gmm.means_)
+    comp0_mito = means_original[0, 0]
+    comp1_mito = means_original[1, 0]
+    
+    if comp0_mito > comp1_mito:
+        compromised_idx = 0
+        healthy_idx = 1
+    else:
+        compromised_idx = 1
+        healthy_idx = 0
+    
+    # Calculate statistics
+    n_compromised = np.sum(labels == compromised_idx)
+    n_healthy = np.sum(labels == healthy_idx)
+    
+    # Get posterior probability thresholds
+    prob_compromised = posteriors[:, compromised_idx]
+    
+    # Find cells at different posterior thresholds
+    thresholds = {}
+    for thresh in [0.5, 0.75, 0.9]:
+        n_above = np.sum(prob_compromised > thresh)
+        thresholds[f'posterior_{int(thresh*100)}'] = {
+            'n_cells_compromised': int(n_above),
+            'pct_cells_compromised': float(100 * n_above / len(prob_compromised))
+        }
+    
+    results = {
+        'converged': True,
+        'regression': {
+            'slope': float(lr.coef_[0]),
+            'intercept': float(lr.intercept_),
+            'r_squared': float(lr.score(log_umis.reshape(-1, 1), log_genes))
+        },
+        'scaler': {
+            'mito_mean': float(scaler.mean_[0]),
+            'mito_std': float(scaler.scale_[0]),
+            'residual_mean': float(scaler.mean_[1]),
+            'residual_std': float(scaler.scale_[1])
+        },
+        'components': {
+            'compromised': {
+                'idx': int(compromised_idx),
+                'mito_mean': float(means_original[compromised_idx, 0]),
+                'residual_mean': float(means_original[compromised_idx, 1]),
+                'weight': float(gmm.weights_[compromised_idx]),
+                'n_cells': int(n_compromised)
+            },
+            'healthy': {
+                'idx': int(healthy_idx),
+                'mito_mean': float(means_original[healthy_idx, 0]),
+                'residual_mean': float(means_original[healthy_idx, 1]),
+                'weight': float(gmm.weights_[healthy_idx]),
+                'n_cells': int(n_healthy)
             }
-    except Exception as e:
-        mixture_stats = {'converged': False, 'error': str(e)}
-    
-    return {
-        'median': median,
-        'mad': mad,
-        'median_plus_2mad': median + 2 * mad,
-        'median_plus_3mad': median + 3 * mad,
-        'p05': percentiles[0],
-        'p25': percentiles[1], 
-        'p75': percentiles[2],
-        'p95': percentiles[3],
-        'p99': percentiles[4],
-        'mixture': mixture_stats
+        },
+        'thresholds': thresholds,
+        'bic': float(gmm.bic(features_scaled)),
+        'aic': float(gmm.aic(features_scaled))
     }
+    
+    return results
 
 
-def plot_violin_with_mean(data, x, y, order, ax, log_scale=False, show_statistics=False, metric_type=None):
+def plot_violin_with_mean(data, x, y, order, ax, log_scale, show_statistics, metric_type):
     """Helper function to create violin plot with mean markers.
     
     Args:
@@ -168,69 +220,135 @@ def plot_violin_with_mean(data, x, y, order, ax, log_scale=False, show_statistic
     
     # Add statistical lines if requested and this is mitochondrial percentage
     if show_statistics and metric_type == 'pct_mito' and len(plot_data) > 0:
-        # Calculate statistics on all data (not just non-zero)
+        # Calculate simple statistics on all data
         all_values = data[y].values
-        stats = calculate_distribution_statistics(all_values)
+        median = np.median(all_values)
+        mad = median_abs_deviation(all_values)
         
-        if stats:
-            # Add horizontal lines for key statistics
-            ax.axhline(y=stats['median'], color='blue', linestyle='-', linewidth=2, alpha=0.8, label=f"Median ({stats['median']:.1f}%)")
-            ax.axhline(y=stats['median_plus_2mad'], color='orange', linestyle='--', linewidth=1.5, alpha=0.8, label=f"Median+2×MAD ({stats['median_plus_2mad']:.1f}%)")
-            ax.axhline(y=stats['median_plus_3mad'], color='red', linestyle=':', linewidth=1.5, alpha=0.8, label=f"Median+3×MAD ({stats['median_plus_3mad']:.1f}%)")
-            
-            # Add percentile lines
-            ax.axhline(y=stats['p95'], color='purple', linestyle='-', linewidth=1, alpha=0.6, label=f"95th percentile ({stats['p95']:.1f}%)")
-            ax.axhline(y=stats['p99'], color='purple', linestyle='--', linewidth=1, alpha=0.6, label=f"99th percentile ({stats['p99']:.1f}%)")
-            
-            # Add mixture model components if converged
-            if stats['mixture'].get('converged', False):
-                mix = stats['mixture']
-                ax.axhline(y=mix['low_component_mean'], color='green', linestyle='-', linewidth=1, alpha=0.7, 
-                          label=f"Low mito component ({mix['low_component_mean']:.1f}%, w={mix['low_component_weight']:.2f})")
-                ax.axhline(y=mix['high_component_mean'], color='darkred', linestyle='-', linewidth=1, alpha=0.7,
-                          label=f"High mito component ({mix['high_component_mean']:.1f}%, w={mix['high_component_weight']:.2f})")
-            
-            # Add legend
-            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        # MAD-based (solid lines)
+        ax.axhline(y=median, color='blue', linestyle='-', linewidth=1, 
+                  label=f"Median ({median:.1f}%)")
+        ax.axhline(y=median + 2*mad, color='cyan', linestyle='-', linewidth=1,
+                  label=f"Median+2×MAD ({median + 2*mad:.1f}%)")
+        ax.axhline(y=median + 3*mad, color='navy', linestyle='-', linewidth=1,
+                  label=f"Median+3×MAD ({median + 3*mad:.1f}%)")
+        
+        # Percentiles (dashed lines)
+        p75 = np.percentile(all_values, 75)
+        p95 = np.percentile(all_values, 95)
+        p99 = np.percentile(all_values, 99)
+        
+        ax.axhline(y=p75, color='green', linestyle='--', linewidth=1,
+                  label=f"75th percentile ({p75:.1f}%)")
+        ax.axhline(y=p95, color='orange', linestyle='--', linewidth=1,
+                  label=f"95th percentile ({p95:.1f}%)")
+        ax.axhline(y=p99, color='red', linestyle='--', linewidth=1,
+                  label=f"99th percentile ({p99:.1f}%)")
+        
+        # Add legend
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
     
     return nonzero_fractions
 
 
-def save_qc_cutoffs_yaml(adata, output_path):
-    """Save QC cutoffs to YAML file.
+def save_qc_cell_lists(adata, output_path, config=None):
+    """Save cell filtering decisions for multiple QC methods.
     
     Args:
         adata: AnnData object with QC metrics
-        output_path: Path to save YAML file
+        output_path: Path to save TSV file with cell lists
+        config: Configuration dictionary for fallback options
     """
-    # Calculate mitochondrial cutoffs
+    print("\nCalculating QC filtering decisions for all methods..."))
+    
+    # Initialize DataFrame with barcodes
+    cell_lists = pd.DataFrame({'barcode': adata.obs.index})
+    
+    # Get mitochondrial values
     mito_values = adata.obs['pct_counts_mt'].values
-    mito_stats = calculate_distribution_statistics(mito_values)
     
-    # Create cutoffs dictionary
-    cutoffs = {
-        'mitochondrial': {
-            'median': round(mito_stats['median'], 2),
-            'mad': round(mito_stats['mad'], 2),
-            'median_plus_2mad': round(mito_stats['median_plus_2mad'], 2),
-            'median_plus_3mad': round(mito_stats['median_plus_3mad'], 2),
-            'percentile_5': round(mito_stats['p05'], 2),
-            'percentile_25': round(mito_stats['p25'], 2),
-            'percentile_75': round(mito_stats['p75'], 2),
-            'percentile_95': round(mito_stats['p95'], 2),
-            'percentile_99': round(mito_stats['p99'], 2)
-        }
-    }
+    # Calculate basic statistics for simple methods
+    median = np.median(mito_values)
+    mad = median_abs_deviation(mito_values)
     
-    # Add mixture model results if available
-    if mito_stats['mixture'].get('converged', False):
-        mix = mito_stats['mixture']
-        cutoffs['mitochondrial']['mixture_low_mean'] = round(mix['low_component_mean'], 2)
-        cutoffs['mitochondrial']['mixture_high_mean'] = round(mix['high_component_mean'], 2)
+    # MAD-based methods
+    cell_lists['median_plus_2mad'] = mito_values < (median + 2 * mad)
+    cell_lists['median_plus_3mad'] = mito_values < (median + 3 * mad)
     
-    # Save to YAML
-    with open(output_path, 'w') as f:
-        yaml.dump(cutoffs, f, default_flow_style=False, sort_keys=False)
+    # Percentile-based methods
+    cell_lists['percentile_95'] = mito_values < np.percentile(mito_values, 95)
+    cell_lists['percentile_99'] = mito_values < np.percentile(mito_values, 99)
+    
+    # 2D GMM method (DEFAULT)
+    if 'total_counts' in adata.obs.columns and 'n_genes' in adata.obs.columns:
+        # Calculate 2D GMM
+        gmm_2d_stats = calculate_2d_gmm_statistics(
+            mito_values,
+            adata.obs['total_counts'].values,
+            adata.obs['n_genes'].values
+        )
+        
+        if gmm_2d_stats['converged']:
+            # Recalculate posteriors for all cells
+            log_umis = np.log1p(adata.obs['total_counts'].values)
+            log_genes = np.log1p(adata.obs['n_genes'].values)
+            
+            # Recreate regression residuals
+            lr = LinearRegression()
+            lr.fit(log_umis.reshape(-1, 1), log_genes)
+            predicted_log_genes = lr.predict(log_umis.reshape(-1, 1))
+            residuals = log_genes - predicted_log_genes
+            
+            # Standardize features
+            features = np.column_stack([mito_values, residuals])
+            scaler = StandardScaler()
+            features_scaled = scaler.fit_transform(features)
+            
+            # Fit GMM to get posteriors
+            gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
+            gmm.fit(features_scaled)
+            posteriors = gmm.predict_proba(features_scaled)
+            
+            # Identify compromised component
+            means_original = scaler.inverse_transform(gmm.means_)
+            if means_original[0, 0] > means_original[1, 0]:  # Higher mito% = compromised
+                compromised_idx = 0
+            else:
+                compromised_idx = 1
+            
+            # Set filtering decisions
+            prob_compromised = posteriors[:, compromised_idx]
+            cell_lists['gmm_2d_posterior_75'] = prob_compromised < 0.75
+            cell_lists['gmm_2d_posterior_50'] = prob_compromised < 0.50
+            cell_lists['gmm_2d_posterior_90'] = prob_compromised < 0.90
+        else:
+            # Get fallback method from config
+            fallback_method = config['qc_filtering']['gmm_fallback_method']
+            
+            print(f"  Warning: 2D GMM failed to converge ({gmm_2d_stats.get('error', 'Unknown error')})")
+            print(f"  Using fallback method: {fallback_method}")
+            
+            # Use fallback column values
+            cell_lists['gmm_2d_posterior_75'] = cell_lists[fallback_method]
+            cell_lists['gmm_2d_posterior_50'] = cell_lists[fallback_method]
+            cell_lists['gmm_2d_posterior_90'] = cell_lists[fallback_method]
+    else:
+        raise ValueError("Missing required data (total_counts or n_genes) for 2D GMM calculation")
+    
+    # Save to TSV
+    cell_lists.to_csv(output_path, sep='\t', index=False)
+    
+    # Print summary
+    print("\nQC filtering summary:")
+    for col in cell_lists.columns:
+        if col != 'barcode':
+            n_keep = cell_lists[col].sum()
+            n_total = len(cell_lists)
+            pct_keep = 100 * n_keep / n_total
+            default_marker = " (DEFAULT)" if col == 'gmm_2d_posterior_75' else ""
+            print(f"  {col}{default_marker}: {n_keep:,}/{n_total:,} cells ({pct_keep:.1f}%)")
+    
+    print(f"\nSaved cell lists to: {output_path}")
 
 
 
@@ -727,7 +845,7 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                     fig, ax = plt.subplots(figsize=(max(8, len(sorted_groups) * 0.8), 6))
                     
                     # Make violin plot using helper function for consistency
-                    plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups, ax, log_scale=(scale_type == 'log'))
+                    plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups, ax, log_scale=(scale_type == 'log'), show_statistics=False, metric_type=None)
                 
                     # Customize plot
                     ax.set_xlabel(stratify_by.replace('_', ' ').title())
@@ -798,7 +916,7 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 
                 # Make violin plot
                 # Use helper function for violin plot
-                plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups, ax, log_scale=(scale_type == 'log'))
+                plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups, ax, log_scale=(scale_type == 'log'), show_statistics=False, metric_type=None)
             
                 # Customize plot
                 ax.set_xlabel(stratify_by.replace('_', ' ').title())
@@ -894,7 +1012,7 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                         
                         # Make violin plot
                         # Use helper function for violin plot
-                        plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups_umis, ax, log_scale=(scale_type == 'log'))
+                        plot_violin_with_mean(plot_df, 'group', 'value', sorted_groups_umis, ax, log_scale=(scale_type == 'log'), show_statistics=False, metric_type=None)
                     
                         # Customize plot
                         ax.set_xlabel(stratify_by.replace('_', ' ').title())
@@ -937,8 +1055,9 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
 def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot_dir, 
                               x_values_func, x_label,
                               y_values_func, y_label,
+                              color_values_func, color_label, color_map, color_vmin, color_vmax,
                               metric_name, plot_title_suffix):
-    """Generic function to create scatter plots colored by pct mitochondrial.
+    """Generic function to create scatter plots with custom coloring.
     
     Args:
         adata: AnnData object
@@ -950,6 +1069,11 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
         x_label: Label for x-axis
         y_values_func: Function to calculate y-axis values from data subset
         y_label: Label for y-axis
+        color_values_func: Function to calculate color values from data subset
+        color_label: Label for colorbar
+        color_map: Matplotlib colormap name
+        color_vmin: Minimum value for color scale (None for auto)
+        color_vmax: Maximum value for color scale (None for auto)
         metric_name: Name for output directory
         plot_title_suffix: Additional text for plot title
     """
@@ -1015,7 +1139,7 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
             # Get the data
             x_values = x_values_func(data)
             y_values = y_values_func(data)
-            pct_mito = data.obs['pct_counts_mt'].values
+            color_values = color_values_func(data)
             
             # Sample if too many points
             max_points = 10000
@@ -1024,24 +1148,28 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
                 sample_idx = np.random.choice(len(x_values), size=max_points, replace=False)
                 x_values_plot = x_values[sample_idx]
                 y_values_plot = y_values[sample_idx]
-                pct_mito_plot = pct_mito[sample_idx]
+                color_values_plot = color_values[sample_idx]
                 plot_label = f"(showing {max_points:,} of {len(x_values):,} cells)"
             else:
                 x_values_plot = x_values
                 y_values_plot = y_values
-                pct_mito_plot = pct_mito
+                color_values_plot = color_values
                 plot_label = f"({len(x_values):,} cells)"
+            
+            # Determine color scale limits
+            vmin = color_vmin if color_vmin is not None else np.min(color_values)
+            vmax = color_vmax if color_vmax is not None else np.max(color_values)
             
             # Create scatter plot
             scatter = ax.scatter(
                 x_values_plot,
                 y_values_plot,
-                c=pct_mito_plot,
-                cmap='plasma',
+                c=color_values_plot,
+                cmap=color_map,
                 s=1,
                 alpha=0.5,
-                vmin=0,
-                vmax=np.percentile(pct_mito, 95)  # Cap colormap at 95th percentile
+                vmin=vmin,
+                vmax=vmax
             )
             
             # Set log scale
@@ -1055,7 +1183,7 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
             
             # Add colorbar
             cbar = plt.colorbar(scatter, ax=ax)
-            cbar.set_label('% Mitochondrial', rotation=270, labelpad=15)
+            cbar.set_label(color_label, rotation=270, labelpad=15)
             
             # Calculate and add correlation
             if len(x_values) > 1:
@@ -1076,7 +1204,7 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
             axes[j].set_visible(False)
         
         # Overall title
-        title = f'{x_label} vs {y_label} (colored by % Mitochondrial)\n{method} - {sample_id}'
+        title = f'{x_label} vs {y_label} (colored by {color_label})\n{method} - {sample_id}'
         if plot_title_suffix:
             title += f' - {plot_title_suffix}'
         fig.suptitle(title, fontsize=14)
@@ -1094,6 +1222,102 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
         plt.close()
         
         print(f"    Saved {metric_name}/{method}/{stratify_by}/linear/{filename}")
+
+
+def plot_umi_vs_genes_with_gmm(adata, cell_barcodes, sample_id, stratify_by, plot_dir):
+    """Create side-by-side UMI vs genes plots: one colored by mito%, one by GMM posterior."""
+    
+    # First calculate 2D GMM if we have the data
+    has_gmm = False
+    if 'total_counts' in adata.obs.columns and 'n_genes' in adata.obs.columns:
+        gmm_2d_stats = calculate_2d_gmm_statistics(
+            adata.obs['pct_counts_mt'].values,
+            adata.obs['total_counts'].values,
+            adata.obs['n_genes'].values
+        )
+        
+        if gmm_2d_stats['converged']:
+            has_gmm = True
+            # Calculate posterior probabilities for all cells
+            # Need to reconstruct the GMM predictions
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.mixture import GaussianMixture
+            
+            # Recreate the features
+            log_umis = np.log1p(adata.obs['total_counts'].values)
+            log_genes = np.log1p(adata.obs['n_genes'].values)
+            
+            # Recreate regression residuals
+            from sklearn.linear_model import LinearRegression
+            lr = LinearRegression()
+            lr.fit(log_umis.reshape(-1, 1), log_genes)
+            predicted_log_genes = lr.predict(log_umis.reshape(-1, 1))
+            residuals = log_genes - predicted_log_genes
+            
+            # Standardize features
+            features = np.column_stack([adata.obs['pct_counts_mt'].values, residuals])
+            scaler = StandardScaler()
+            features_scaled = scaler.fit_transform(features)
+            
+            # Fit GMM to get posteriors
+            gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
+            gmm.fit(features_scaled)
+            posteriors = gmm.predict_proba(features_scaled)
+            
+            # Identify compromised component
+            means_original = scaler.inverse_transform(gmm.means_)
+            if means_original[0, 0] > means_original[1, 0]:  # Higher mito% = compromised
+                compromised_idx = 0
+            else:
+                compromised_idx = 1
+            
+            # Store posterior probability of being compromised
+            adata.obs['gmm_2d_posterior_compromised'] = posteriors[:, compromised_idx]
+    
+    # Plot 1: Colored by mitochondrial %
+    print("\nCreating UMI vs genes scatter plots colored by % mitochondrial...")
+    _plot_umi_scatter_generic(
+        adata=adata,
+        cell_barcodes=cell_barcodes,
+        sample_id=sample_id,
+        stratify_by=stratify_by,
+        plot_dir=plot_dir,
+        x_values_func=lambda data: data.obs['total_counts'].values,
+        x_label='Total UMI Counts',
+        y_values_func=lambda data: data.obs['n_genes_by_counts'].values,
+        y_label='Number of Genes Detected',
+        color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+        color_label='% Mitochondrial',
+        color_map='plasma',
+        color_vmin=0,
+        color_vmax=None,  # Will use actual max
+        metric_name='umi_vs_genes_scatter_mito',
+        plot_title_suffix=''
+    )
+    
+    # Plot 2: Colored by GMM posterior (if available)
+    if has_gmm:
+        print("\nCreating UMI vs genes scatter plots colored by 2D GMM posterior probability...")
+        _plot_umi_scatter_generic(
+            adata=adata,
+            cell_barcodes=cell_barcodes,
+            sample_id=sample_id,
+            stratify_by=stratify_by,
+            plot_dir=plot_dir,
+            x_values_func=lambda data: data.obs['total_counts'].values,
+            x_label='Total UMI Counts',
+            y_values_func=lambda data: data.obs['n_genes_by_counts'].values,
+            y_label='Number of Genes Detected',
+            color_values_func=lambda data: data.obs['gmm_2d_posterior_compromised'].values,
+            color_label='P(Compromised)',
+            color_map='RdYlBu_r',  # Red=high probability, Blue=low probability
+            color_vmin=0,
+            color_vmax=1,
+            metric_name='umi_vs_genes_scatter_gmm',
+            plot_title_suffix='2D GMM'
+        )
+    
+    print("UMI vs genes scatter plots completed")
 
 
 def plot_umi_vs_guides_scatter(adata, cell_barcodes, sample_id, stratify_by, plot_dir, source, processing, guide_cutoffs, pool=None):
@@ -1129,6 +1353,11 @@ def plot_umi_vs_guides_scatter(adata, cell_barcodes, sample_id, stratify_by, plo
             x_label='Total UMI Counts',
             y_values_func=calculate_guides_at_cutoff,
             y_label=f'Number of Guides Detected (cutoff={cutoff})',
+            color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+            color_label='% Mitochondrial',
+            color_map='plasma',
+            color_vmin=0,
+            color_vmax=None,
             metric_name=f'umi_vs_guides_scatter_cutoff{cutoff}',
             plot_title_suffix=f'Cutoff={cutoff}'
         )
@@ -1153,7 +1382,7 @@ def main():
                         help='Data source (main, undetermined, or all)')
     parser.add_argument('--processing', required=True, choices=['raw', 'trimmed', 'recovered', 'merged'],
                         help='Processing state (raw, trimmed, recovered, or merged)')
-    parser.add_argument('--qc-cutoffs-output', help='Output YAML file for QC cutoffs')
+    parser.add_argument('--qc-cell-lists-output', help='Output TSV file for QC cell filtering decisions')
     
     args = parser.parse_args()
     
@@ -1336,25 +1565,8 @@ def main():
                                plot_dir, args.sample_id, source, processing, guide_cutoffs, 
                                pool=args.pool, read_stats=combined_read_stats)
     
-    # Generate UMI vs genes scatter plots
-    print("\nCreating UMI vs genes scatter plots colored by % mitochondrial...")
-    print(f"  Creating scatter plots for {len(cell_barcodes)} methods: {', '.join(sorted(cell_barcodes.keys()))}")
-    
-    _plot_umi_scatter_generic(
-        adata=adata,
-        cell_barcodes=cell_barcodes,
-        sample_id=args.sample_id,
-        stratify_by=args.stratify_by,
-        plot_dir=plot_dir,
-        x_values_func=lambda data: data.obs['total_counts'].values,
-        x_label='Total UMI Counts',
-        y_values_func=lambda data: data.obs['n_genes_by_counts'].values,
-        y_label='Number of Genes Detected',
-        metric_name='umi_vs_genes_scatter',
-        plot_title_suffix=''
-    )
-    
-    print("UMI vs genes scatter plots completed")
+    # Generate UMI vs genes scatter plots (both mito% and GMM posterior if available)
+    plot_umi_vs_genes_with_gmm(adata, cell_barcodes, args.sample_id, args.stratify_by, plot_dir)
     
     # Generate UMI vs guides scatter plots for each cutoff
     if 'guide_counts' in adata.obsm:
@@ -1375,6 +1587,11 @@ def main():
             x_label='Total UMI Counts',
             y_values_func=lambda data: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
             y_label='Guide UMIs',
+            color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+            color_label='% Mitochondrial',
+            color_map='plasma',
+            color_vmin=0,
+            color_vmax=None,
             metric_name='gex_vs_guide_umis_scatter',
             plot_title_suffix=''
         )
@@ -1408,16 +1625,21 @@ def main():
                 x_label='Guide UMIs',
                 y_values_func=calculate_guides_at_cutoff,
                 y_label=f'Number of Guides Detected (cutoff={cutoff})',
+                color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+                color_label='% Mitochondrial',
+                color_map='plasma',
+                color_vmin=0,
+                color_vmax=None,
                 metric_name=f'guide_umis_vs_num_guides_scatter_cutoff{cutoff}',
                 plot_title_suffix=f'Cutoff={cutoff}'
             )
         
         print("Guide UMIs vs Number of Guides scatter plots completed")
     
-    # Save QC cutoffs to YAML if requested
-    if args.qc_cutoffs_output:
-        print(f"\nSaving QC cutoffs to: {args.qc_cutoffs_output}")
-        save_qc_cutoffs_yaml(adata, args.qc_cutoffs_output)
+    # Save QC cell lists if requested
+    if args.qc_cell_lists_output:
+        print(f"\nSaving QC cell lists to: {args.qc_cell_lists_output}")
+        save_qc_cell_lists(adata, args.qc_cell_lists_output, config)
     
     # Clean up memory
     del adata

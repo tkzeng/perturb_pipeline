@@ -125,6 +125,10 @@ sublibrary_filtering:
   skip_barcode_filtering: true
   min_umi_filter: 100
 
+# QC filtering parameters
+qc_filtering:
+  gmm_fallback_method: "percentile_95"  # Fallback method when 2D GMM doesn't converge
+
 # Cell quality filtering thresholds
 # NOTE: These are currently UNUSED in the pipeline - apply_cell_filters() is never called
 # TODO: Remove or implement cell filtering in the pipeline
@@ -160,16 +164,31 @@ combination:
       name: "all_combined"
   combine_all_pools: true
 
-# Analysis-ready file configuration
-analysis_ready:
-  # Cell calling method to use for creating analysis-ready files
+# Combined sublibraries configuration
+combined_sublibraries:
+  # Cell calling method to use for creating combined sublibrary files
   # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
   #          BarcodeRanks_Knee, BarcodeRanks_Inflection
   cell_calling_method: "Expected_Cells"
-  # Output directory for analysis-ready files (relative to results_base)
-  output_dir: "analysis_ready"
+  # Output directory for combined sublibrary files (relative to results_base)
+  output_dir: "combined_sublibraries"
   # Pools to include (empty list means all pools)
   pools: []
-  # Minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
-  # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
-  min_umi_filter: 100
+  # Mitochondrial cutoff key for filtering
+  mito_cutoff_key: "median_mad_2"
+
+# Perturbation preprocessing configuration
+preprocessing:
+  target_genes: ["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"]  # Target genes for analysis
+  use_gpu: false  # Use GPU acceleration (requires RAPIDS)
+  target_clusters: 3  # Target number of clusters for leiden clustering
+  n_hvgs: 2000  # Number of highly variable genes
+  clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
+  
+  # Stratification for perturbation analysis
+  stratification:
+    column: "condition"
+    values: ["72hr_wt", "168hr_wt"]
+  
+  # Non-targeting guide identifiers
+  non_targeting_strings: ["non-targeting", "non.targeting"]

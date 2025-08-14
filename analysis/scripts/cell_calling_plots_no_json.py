@@ -60,94 +60,10 @@ def load_read_statistics(read_stats_file):
     return df.iloc[0].to_dict()
 
 
-def create_umi_distribution_plot_by_method(adata, methods_results, sample_id,
-                                          output_dir, plot_dir, pool, source, processing, read_stats=None):
-    """Create separate UMI distribution plots for each cell calling method."""
-    # Calculate total UMIs per barcode
-    total_counts = np.array(adata.X.sum(axis=1)).flatten()
-    
-    # Get all methods
-    methods = sorted(methods_results.keys())
-    n_methods = len(methods)
-    
-    # Create figure with subplots (3x3 grid to accommodate 7 methods)
-    n_cols = 3
-    n_rows = (n_methods + n_cols - 1) // n_cols  # Ceiling division
-    
-    fig = plt.figure(figsize=(18, 6 * n_rows))
-    
-    # Create consistent bins for all plots
-    bins = np.logspace(0, np.log10(max(total_counts)), 50)
-    
-    # Create a subplot for each method
-    for idx, method in enumerate(methods):
-        ax = plt.subplot(n_rows, n_cols, idx + 1)
-        
-        # Get cell barcodes for this method
-        cell_barcodes = methods_results[method]['cell_barcodes']
-        n_cells = methods_results[method]['n_cells']
-        
-        # Create masks for cells vs non-cells using vectorized operations
-        barcode_series = pd.Series(range(len(adata.obs_names)), index=adata.obs_names)
-        cell_indices = barcode_series[barcode_series.index.isin(cell_barcodes)].values
-        cell_mask = np.zeros(len(adata.obs_names), dtype=bool)
-        cell_mask[cell_indices] = True
-        cell_umis = total_counts[cell_mask]
-        noncell_umis = total_counts[~cell_mask]
-        
-        # Plot histograms
-        ax.hist(noncell_umis, bins=bins, alpha=0.5, 
-                label=f'Non-cells (n={len(noncell_umis):,})', 
-                color='gray', density=True)
-        ax.hist(cell_umis, bins=bins, alpha=0.7, 
-                label=f'Cells (n={len(cell_umis):,})', 
-                color='blue', density=True)
-        
-        # Add vertical line at threshold if applicable
-        threshold = methods_results[method]['threshold']
-        if threshold > 0 and method not in ['Expected_Cells', 'EmptyDrops_FDR0001', 'EmptyDrops_FDR001', 'EmptyDrops_FDR005']:
-            ax.axvline(x=threshold, color='red', linestyle='--', alpha=0.7, 
-                      label=f'Threshold: {threshold:.0f}')
-        
-        # Customize subplot
-        ax.set_xscale('log')
-        ax.set_xlabel('UMI Count', fontsize=10)
-        ax.set_ylabel('Density', fontsize=10)
-        ax.set_title(f'{method}\n{n_cells:,} cells', fontsize=12, fontweight='bold')
-        ax.legend(fontsize=8, loc='upper right')
-        ax.grid(True, alpha=0.3)
-        
-        # Set consistent axis limits
-        ax.set_xlim(1, max(total_counts))
-    
-    # Remove empty subplots if any
-    for idx in range(n_methods, n_rows * n_cols):
-        fig.delaxes(plt.subplot(n_rows, n_cols, idx + 1))
-    
-    # Add total reads to title
-    total_reads = read_stats['total_reads']
-    title = f'UMI Distribution by Method - {sample_id}\nTotal Reads: {total_reads:,}'
-    
-    plt.suptitle(title, fontsize=16, fontweight='bold')
-    plt.tight_layout()
-    
-    # Save the plot
-    plot_path = Path(plot_dir) / 'cell_calling' / f'{source}_{processing}' / sample_id / 'umi_distribution_by_method' / 'linear'
-    plot_path.mkdir(parents=True, exist_ok=True)
-    
-    plot_filename = 'plot.png'
-    full_plot_path = plot_path / plot_filename
-    plt.savefig(full_plot_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"\nUMI distribution by method plot saved to: {full_plot_path}")
-    return str(full_plot_path)
-
-
 def create_barcode_rank_plot_by_method(adata, methods_results, sample_id, 
                                        output_dir, plot_dir, pool, source, processing, read_stats=None, 
                                        dropletutils_df=None):
-    """Create separate barcode rank plots for each cell calling method."""
+    """Create separate barcode rank plots for each cell calling method with dedicated fitted spline plot."""
     # Calculate total UMIs per barcode
     total_counts = np.array(adata.X.sum(axis=1)).flatten()
     total_counts_sorted = np.sort(total_counts)[::-1]
@@ -157,9 +73,11 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
     methods = sorted(methods_results.keys())
     n_methods = len(methods)
     
-    # Create figure with subplots (3x3 grid to accommodate 7 methods)
+    # Calculate grid size to accommodate methods + fitted spline plot
+    # Add 1 for the fitted spline subplot
+    total_subplots_needed = n_methods + 1
     n_cols = 3
-    n_rows = (n_methods + n_cols - 1) // n_cols  # Ceiling division
+    n_rows = (total_subplots_needed + n_cols - 1) // n_cols  # Ceiling division
     
     fig = plt.figure(figsize=(18, 6 * n_rows))
     
@@ -200,21 +118,8 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
                     ax.axhline(y=threshold, color='blue', linestyle='--', alpha=0.7, 
                               label=f'Threshold: {threshold:.0f}')
                     
-                    # For BarcodeRanks methods, plot the fitted spline if available
-                    if method in ['BarcodeRanks_Knee', 'BarcodeRanks_Inflection'] and dropletutils_df is not None:
-                        # Get fitted values from dropletutils results
-                        if 'br_fitted' in dropletutils_df.columns and 'br_rank' in dropletutils_df.columns:
-                            # Filter out NA values and sort by rank
-                            fitted_data = dropletutils_df[['br_rank', 'br_fitted', 'total_counts']].copy()
-                            fitted_data = fitted_data.dropna(subset=['br_fitted', 'br_rank'])
-                            
-                            if len(fitted_data) > 0:
-                                fitted_data = fitted_data.sort_values('br_rank')
-                                # Plot the fitted spline with transparency and dashed style
-                                ax.plot(fitted_data['br_rank'], fitted_data['br_fitted'], 
-                                       color='limegreen', linestyle='--', linewidth=2.5, alpha=0.7, 
-                                       label='Fitted spline', zorder=4)
-                        
+                    # For BarcodeRanks methods, add vertical line at threshold rank
+                    if method in ['BarcodeRanks_Knee', 'BarcodeRanks_Inflection']:
                         # Find the rank where this threshold is reached
                         # Use searchsorted to find where threshold would be inserted in sorted array
                         threshold_rank = np.searchsorted(-total_counts_sorted, -threshold) + 1
@@ -233,8 +138,58 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
         ax.set_xlim(1, len(ranks))
         ax.set_ylim(1, max(total_counts_sorted))
     
-    # Remove empty subplots if any
-    for idx in range(n_methods, n_rows * n_cols):
+    # Add dedicated fitted spline subplot (after all methods)
+    spline_position = n_methods + 1  # Position after all method subplots
+    if dropletutils_df is not None and 'br_fitted' in dropletutils_df.columns and 'br_rank' in dropletutils_df.columns:
+        ax_spline = plt.subplot(n_rows, n_cols, spline_position)
+        
+        # Plot all barcodes as background
+        ax_spline.loglog(ranks, total_counts_sorted, 'k-', alpha=0.3, linewidth=1, label='All barcodes')
+        
+        # Get fitted spline data
+        fitted_data = dropletutils_df[['br_rank', 'br_fitted', 'total_counts']].copy()
+        fitted_data = fitted_data.dropna(subset=['br_fitted', 'br_rank'])
+        
+        if len(fitted_data) > 0:
+            fitted_data = fitted_data.sort_values('br_rank')
+            
+            # Plot the fitted spline prominently
+            ax_spline.plot(fitted_data['br_rank'], fitted_data['br_fitted'], 
+                          color='limegreen', linestyle='-', linewidth=3, alpha=0.9, 
+                          label='Fitted spline', zorder=5)
+            
+            # Add knee and inflection thresholds if they exist
+            knee_method = 'BarcodeRanks_Knee'
+            inflection_method = 'BarcodeRanks_Inflection'
+            
+            if knee_method in methods_results:
+                knee_threshold = methods_results[knee_method]['threshold']
+                if knee_threshold > 0:
+                    ax_spline.axhline(y=knee_threshold, color='red', linestyle='--', alpha=0.7, 
+                                     linewidth=2, label=f'Knee: {knee_threshold:.0f}')
+                    knee_rank = np.searchsorted(-total_counts_sorted, -knee_threshold) + 1
+                    ax_spline.axvline(x=knee_rank, color='red', linestyle=':', alpha=0.5)
+            
+            if inflection_method in methods_results:
+                inflection_threshold = methods_results[inflection_method]['threshold']
+                if inflection_threshold > 0:
+                    ax_spline.axhline(y=inflection_threshold, color='blue', linestyle='--', alpha=0.7,
+                                     linewidth=2, label=f'Inflection: {inflection_threshold:.0f}')
+                    inflection_rank = np.searchsorted(-total_counts_sorted, -inflection_threshold) + 1
+                    ax_spline.axvline(x=inflection_rank, color='blue', linestyle=':', alpha=0.5)
+        
+        # Customize subplot
+        ax_spline.set_xlabel('Barcode Rank', fontsize=10)
+        ax_spline.set_ylabel('UMI Counts', fontsize=10)
+        ax_spline.set_title('BarcodeRanks Fitted Spline\n(Knee & Inflection Detection)', 
+                           fontsize=12, fontweight='bold')
+        ax_spline.legend(fontsize=8, loc='upper right')
+        ax_spline.grid(True, alpha=0.3)
+        ax_spline.set_xlim(1, len(ranks))
+        ax_spline.set_ylim(1, max(total_counts_sorted))
+    
+    # Remove any empty subplots
+    for idx in range(total_subplots_needed, n_rows * n_cols):
         fig.delaxes(plt.subplot(n_rows, n_cols, idx + 1))
     
     # Add total reads to title
@@ -350,7 +305,7 @@ def create_cell_calling_summary_plot(adata, methods_results, dropletutils_df, sa
     explanation_text = "UMI Recovery Calculation\n\n"
     explanation_text += "UMI Recovery % = \n"
     explanation_text += "Total UMIs in called cells\n"
-    explanation_text += "─────────────────────────  × 100\n"
+    explanation_text += "─────────────────────────  x 100\n"
     explanation_text += "Total UMIs in all barcodes\n\n"
     explanation_text += "Measures the percentage of UMIs\n"
     explanation_text += "from true cells vs empty droplets."
@@ -419,14 +374,6 @@ def main():
         args.cell_calling_dir, args.plot_dir,
         pool, args.source, args.processing, read_stats,
         dropletutils_df
-    )
-    
-    # Generate the UMI distribution plots by method
-    print("Generating UMI distribution plots by method...")
-    umi_dist_path = create_umi_distribution_plot_by_method(
-        adata, methods_results, args.sample_id,
-        args.cell_calling_dir, args.plot_dir,
-        pool, args.source, args.processing, read_stats
     )
     
     # Generate the summary plots

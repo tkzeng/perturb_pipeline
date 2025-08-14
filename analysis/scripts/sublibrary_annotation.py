@@ -151,7 +151,7 @@ def filter_and_prepare_guide(adata, sample_id, gex_barcodes, no_filter=False):
     
     # Filter adata
     adata_filtered = adata[common_barcodes, :].copy()
-    log_print(f"   Filtered: {adata_filtered.shape[0]} cells × {adata_filtered.shape[1]} guides")
+    log_print(f"   Filtered: {adata_filtered.shape[0]} cells x {adata_filtered.shape[1]} guides")
     
     # Clean up original adata
     del adata

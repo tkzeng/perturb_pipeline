@@ -1,0 +1,6 @@
+
+# Large data files - exclude all h5ad files in any subdirectory
+**/*.h5ad
+
+# R packages/submodules
+miQC/

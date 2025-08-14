@@ -141,8 +141,10 @@ combined_sublibraries:
   # Pools to include (empty list means all pools)
   pools: []
   # Mitochondrial cutoff to use from qc_cutoffs.yaml
-  # Options: median, median_plus_2mad, median_plus_3mad, percentile_95, percentile_99, mixture_high_mean
-  mito_cutoff_key: "median_plus_3mad"
+  # Basic options: median, median_plus_2mad, median_plus_3mad, percentile_75, percentile_95, percentile_99
+  # Mixture model options (if available): mixture_posterior_50, mixture_posterior_75, mixture_posterior_90,
+  #   mixture_intersection, mixture_low_upper_95
+  mito_cutoff_key: "mixture_posterior_75"
   # Default minimum UMI count to keep a barcode (reduces memory by filtering ultra-low count barcodes)
   # NOTE: This filter is ALWAYS applied, even when skip_barcode_filtering is true
   min_umi_filter: 100
