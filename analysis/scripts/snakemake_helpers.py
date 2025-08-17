@@ -298,19 +298,23 @@ def get_all_outputs(config, combinations=None, as_dict=False):
     organization improves user experience.
     """
     if combinations is None:
-        # Get combinations from config
-        combinations = config['analysis']['combinations']
+        # Get combinations from config (top level)
+        combinations = config['combinations']
         # Convert list of lists to list of tuples
         combinations = [tuple(combo) for combo in combinations]
     
+    # Initialize with standard categories
     outputs_dict = {
         'read_stats': [],
         'cell_calling': [],
         'qc_metrics': [],
         'saturation': [],
         'consolidated': [],
+        'umap': [],  # UMAP plots from standard analyses
         'report': [f"{get_results_path(config=config)}/qc_report/DONE.txt"]
     }
+    
+    # UMAP subsets are now contained within the main umap directory, so no separate categories needed
     
     sample_df = load_sample_info(config)
     
@@ -354,6 +358,10 @@ def get_all_outputs(config, combinations=None, as_dict=False):
                 # Per-cell plots
                 outputs_dict['qc_metrics'].append(
                     f"{get_results_path(config=config)}/qc_report/plots/per_cell/{source}_{processing}/{sample_id}"
+                )
+                # GMM QC plots
+                outputs_dict['qc_metrics'].append(
+                    f"{get_results_path(config=config)}/qc_report/plots/gmm_qc/{source}_{processing}/{sample_id}"
                 )
     
     # Saturation analysis for main/raw only - iterate through samples
@@ -399,6 +407,15 @@ def get_all_outputs(config, combinations=None, as_dict=False):
             f"{get_results_path(config=config)}/qc_report/plots/consolidated_cell_based/{source}_{processing}",
             f"{get_results_path(config=config)}/qc_report/plots/consolidated_{source}_{processing}.complete"
         ])
+        
+        # Add UMAP plots (created by downstream.smk after standard analyses)
+        # These are included in the dictionary but only used by generate_final_report
+        if 'combined_sublibraries' in config:
+            # Add both the directory and the completion marker (like other plot categories)
+            outputs_dict['umap'].append(f"{get_results_path(config=config)}/qc_report/plots/umap/{source}_{processing}")
+            outputs_dict['umap'].append(f"{get_results_path(config=config)}/qc_report/plots/umap/{source}_{processing}.complete")
+            
+            # UMAP subsets are now contained within main umap directory
     
     if as_dict:
         return outputs_dict

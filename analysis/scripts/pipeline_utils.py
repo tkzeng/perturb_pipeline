@@ -994,9 +994,9 @@ def normalize_and_preprocess(adata, use_gpu=False):
     return adata_hvg, adata_expressed
 
 
-def perform_dimensionality_reduction(adata, use_gpu=False):
+def perform_dimensionality_reduction(adata, use_gpu=False, n_neighbors=15, n_pcs=15):
     """Perform PCA and UMAP on data."""
-    log_print("📊 Performing dimensionality reduction...")
+    log_print(f"📊 Performing dimensionality reduction (n_neighbors={n_neighbors}, n_pcs={n_pcs})...")
 
     # PCA
     # TODO: Make n_comps configurable (currently hardcoded to 50)
@@ -1006,11 +1006,10 @@ def perform_dimensionality_reduction(adata, use_gpu=False):
         sc.pp.pca(adata, n_comps=50, use_highly_variable=True)
 
     # Compute neighborhood graph
-    # TODO: Make n_neighbors and n_pcs configurable (currently hardcoded to 15)
     if use_gpu and GPU_AVAILABLE:
-        rsc.pp.neighbors(adata, n_neighbors=15, n_pcs=15)
+        rsc.pp.neighbors(adata, n_neighbors=n_neighbors, n_pcs=n_pcs)
     else:
-        sc.pp.neighbors(adata, n_neighbors=15, n_pcs=15)
+        sc.pp.neighbors(adata, n_neighbors=n_neighbors, n_pcs=n_pcs)
 
     # UMAP
     if use_gpu and GPU_AVAILABLE:
@@ -1024,13 +1023,13 @@ def perform_dimensionality_reduction(adata, use_gpu=False):
 
 
 def perform_clustering(adata, use_gpu=False, target_clusters=3):
-    """Perform Leiden clustering discovering up to 10 clusters, starting at 0.05 resolution."""
-    log_print(f"🎯 Performing Leiden clustering (discovering up to 10 clusters)...")
+    """Perform Leiden clustering discovering up to 6 clusters, starting at 0.05 resolution."""
+    log_print(f"🎯 Performing Leiden clustering (discovering up to 6 clusters)...")
 
     # TODO: Make clustering parameters configurable (resolution start, max_clusters, limit)
-    # Start at 0.05 and increment until we find up to 10 clusters
+    # Start at 0.05 and increment until we find up to 6 clusters
     resolution = 0.05
-    max_clusters = 10
+    max_clusters = 6
     best_resolution = 0.05
 
     while resolution <= 2.0:  # Safety limit
@@ -1054,14 +1053,19 @@ def perform_clustering(adata, use_gpu=False, target_clusters=3):
 
     log_print(f"✅ Clustering complete: resolution {best_resolution} with {len(adata.obs[f'leiden_{best_resolution}'].unique())} clusters")
 
-    # Assert that leiden_0.05 gives exactly 2 clusters
-    if 'leiden_0.05' in adata.obs.columns:
-        n_clusters_0_05 = len(adata.obs['leiden_0.05'].unique())
-        log_print(f"🔍 Validating leiden_0.05 clustering: found {n_clusters_0_05} clusters")
-        if n_clusters_0_05 != 2:
-            raise ValueError(f"ASSERTION FAILED: leiden_0.05 clustering produced {n_clusters_0_05} clusters, expected exactly 2 clusters. "
-                           f"This indicates the data structure has changed and pseudobulk analysis may not work correctly.")
-        log_print("✅ leiden_0.05 validation passed: exactly 2 clusters found")
+    # Rename leiden columns to clustersN_resX format and remove originals
+    log_print("🔄 Renaming leiden columns to clustersN_resX format...")
+    leiden_cols = [col for col in adata.obs.columns if col.startswith('leiden_')]
+    for col in leiden_cols:
+        resolution_val = col.replace('leiden_', '')
+        n_clusters = len(adata.obs[col].unique())
+        new_col_name = f"clusters{n_clusters}_res{resolution_val}"
+        adata.obs[new_col_name] = adata.obs[col]
+        log_print(f"  Renamed {col} → {new_col_name}")
+    
+    # Now remove the original leiden columns
+    adata.obs.drop(columns=leiden_cols, inplace=True)
+    log_print(f"🧹 Removed {len(leiden_cols)} original leiden columns")
 
     return adata
 

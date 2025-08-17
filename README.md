@@ -9,10 +9,15 @@ The documentation below uses the K562 CRISPR screen configuration (`analysis/con
 git clone [repository_url]
 cd perturb_pipeline
 
-# 2. Activate the existing kb conda environment
+# 2. Set up the conda environment
+# Option A: Use the installation script (recommended for new users)
+cd analysis
+./install_pipeline_dependencies.sh --env-name perturb_pipeline
+conda activate perturb_pipeline
+
+# Option B: Use the existing shared environment
 conda activate /oak/stanford/groups/engreitz/Users/tonyzeng/miniconda3/envs/kb
-# Note: The kb environment is pre-installed with all necessary dependencies
-# If you need to set up your own environment, contact the maintainer for the environment.yml file
+# Note: This environment uses a custom kb_python. See installation notes below.
 
 # 3. Copy and modify the example config
 cp analysis/config.yann_k562.yaml analysis/config.my_experiment.yaml
@@ -97,3 +102,18 @@ Before running the pipeline, you need to prepare the following files.
 - Any other columns are ignored
 
 ### 5. Fill out the `config.my_experiment.yaml` file
+
+## Installation Notes
+
+The pipeline requires a custom version of kb_python with collision detection for guide RNA indexing. This is automatically installed by the installation script.
+
+**Key dependencies:**
+- Custom kb_python (with `remove_collisions` function): https://github.com/tkzeng/kb_python
+- R 4.4 with DropletUtils (latest from GitHub, for distance-based knee/inflection detection)
+- Standard tools: kallisto, bustools, samtools, etc.
+
+To verify the installation worked correctly:
+```bash
+python -c "import kb_python.ref; print('remove_collisions' in dir(kb_python.ref))"
+# Should print: True
+```

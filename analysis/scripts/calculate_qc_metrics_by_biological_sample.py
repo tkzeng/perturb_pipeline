@@ -110,8 +110,6 @@ def plot_violin_with_mean(data, x, y, order, ax, log_scale, show_statistics, met
         mad = median_abs_deviation(all_values)
         
         # MAD-based (solid lines)
-        ax.axhline(y=median, color='blue', linestyle='-', linewidth=1, 
-                  label=f"Median ({median:.1f}%)")
         ax.axhline(y=median + 2*mad, color='cyan', linestyle='-', linewidth=1,
                   label=f"Median+2×MAD ({median + 2*mad:.1f}%)")
         ax.axhline(y=median + 3*mad, color='navy', linestyle='-', linewidth=1,
@@ -1019,35 +1017,7 @@ def plot_umi_vs_genes_with_gmm(adata, cell_barcodes, sample_id, stratify_by, plo
         qc_cell_lists_path: Path to pre-calculated QC cell lists TSV with GMM posteriors
     """
     
-    # Load pre-calculated GMM posteriors from QC cell lists
-    has_gmm = False
-    if qc_cell_lists_path and os.path.exists(qc_cell_lists_path):
-        print(f"  Loading pre-calculated GMM posteriors from: {qc_cell_lists_path}")
-        qc_cell_lists = pd.read_csv(qc_cell_lists_path, sep='\t')
-        
-        # Check if GMM posterior column exists
-        if 'gmm_2d_posterior_prob' in qc_cell_lists.columns:
-            has_gmm = True
-            # Map posteriors to adata cells
-            # Create a dictionary for fast lookup
-            barcode_to_posterior = dict(zip(qc_cell_lists['barcode'], qc_cell_lists['gmm_2d_posterior_prob']))
-            
-            # Add posterior probabilities to adata.obs
-            adata.obs['gmm_2d_posterior_compromised'] = adata.obs.index.map(barcode_to_posterior)
-            
-            # Check if mapping was successful
-            if adata.obs['gmm_2d_posterior_compromised'].isna().all():
-                print("  Warning: GMM posteriors could not be mapped to cells. Check barcode compatibility.")
-                has_gmm = False
-            else:
-                n_mapped = adata.obs['gmm_2d_posterior_compromised'].notna().sum()
-                print(f"  Successfully mapped GMM posteriors for {n_mapped}/{adata.n_obs} cells")
-        else:
-            print("  Warning: GMM posterior column not found in QC cell lists file")
-    else:
-        print("  Warning: QC cell lists file not provided or not found, skipping GMM plot")
-    
-    # Plot 1: Colored by mitochondrial %
+    # Plot colored by mitochondrial %
     print("\nCreating UMI vs genes scatter plots colored by % mitochondrial...")
     _plot_umi_scatter_generic(
         adata=adata,
@@ -1067,28 +1037,6 @@ def plot_umi_vs_genes_with_gmm(adata, cell_barcodes, sample_id, stratify_by, plo
         metric_name='umi_vs_genes_scatter_mito',
         plot_title_suffix=''
     )
-    
-    # Plot 2: Colored by GMM posterior (if available)
-    if has_gmm:
-        print("\nCreating UMI vs genes scatter plots colored by 2D GMM posterior probability...")
-        _plot_umi_scatter_generic(
-            adata=adata,
-            cell_barcodes=cell_barcodes,
-            sample_id=sample_id,
-            stratify_by=stratify_by,
-            plot_dir=plot_dir,
-            x_values_func=lambda data: data.obs['total_counts'].values,
-            x_label='Total UMI Counts',
-            y_values_func=lambda data: data.obs['n_genes_by_counts'].values,
-            y_label='Number of Genes Detected',
-            color_values_func=lambda data: data.obs['gmm_2d_posterior_compromised'].values,
-            color_label='P(Compromised)',
-            color_map='RdYlBu_r',  # Red=high probability, Blue=low probability
-            color_vmin=0,
-            color_vmax=1,
-            metric_name='umi_vs_genes_scatter_gmm',
-            plot_title_suffix='2D GMM'
-        )
     
     print("UMI vs genes scatter plots completed")
 

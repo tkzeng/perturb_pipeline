@@ -5,7 +5,7 @@ data/
 misc/
 references/
 analysis/statin_perturb/
-analysis/scripts/UNUSED/
+**/UNUSED/
 analysis/misc/
 analysis/.snakemake/
 

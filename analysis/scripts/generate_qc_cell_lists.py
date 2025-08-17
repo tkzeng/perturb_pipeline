@@ -20,6 +20,10 @@ from scipy.stats import median_abs_deviation
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import Ellipse
+import os
 
 
 def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
@@ -55,7 +59,8 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
     residuals = log_genes - predicted_log_genes
     
     # Prepare features for 2D GMM
-    features = np.column_stack([mito_clean, residuals])
+    # Order: [residuals, mito] to match plotting convention
+    features = np.column_stack([residuals, mito_clean])
     
     # Standardize features
     scaler = StandardScaler()
@@ -65,18 +70,16 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
     gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
     gmm.fit(features_scaled)
     
-    if not gmm.converged_:
-        return {'converged': False, 'error': 'GMM did not converge'}
-    
-    # Get predictions
+    # Get predictions (even if not converged)
     labels = gmm.predict(features_scaled)
     posteriors = gmm.predict_proba(features_scaled)
     
     # Identify which component is "compromised" (high mito, low residual)
-    # Component with higher mean mito (in scaled space) is likely compromised
+    # Component with higher mean mito is likely compromised
+    # Note: features are now [residuals, mito] so mito is index 1
     means_original = scaler.inverse_transform(gmm.means_)
-    comp0_mito = means_original[0, 0]
-    comp1_mito = means_original[1, 0]
+    comp0_mito = means_original[0, 1]  # mito is second feature
+    comp1_mito = means_original[1, 1]  # mito is second feature
     
     if comp0_mito > comp1_mito:
         compromised_idx = 0
@@ -102,30 +105,30 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
         }
     
     results = {
-        'converged': True,
+        'converged': bool(gmm.converged_),
         'regression': {
             'slope': float(lr.coef_[0]),
             'intercept': float(lr.intercept_),
             'r_squared': float(lr.score(log_umis.reshape(-1, 1), log_genes))
         },
         'scaler': {
-            'mito_mean': float(scaler.mean_[0]),
-            'mito_std': float(scaler.scale_[0]),
-            'residual_mean': float(scaler.mean_[1]),
-            'residual_std': float(scaler.scale_[1])
+            'residual_mean': float(scaler.mean_[0]),  # residual is first feature now
+            'residual_std': float(scaler.scale_[0]),
+            'mito_mean': float(scaler.mean_[1]),  # mito is second feature now
+            'mito_std': float(scaler.scale_[1])
         },
         'components': {
             'compromised': {
                 'idx': int(compromised_idx),
-                'mito_mean': float(means_original[compromised_idx, 0]),
-                'residual_mean': float(means_original[compromised_idx, 1]),
+                'residual_mean': float(means_original[compromised_idx, 0]),  # residual is first
+                'mito_mean': float(means_original[compromised_idx, 1]),  # mito is second
                 'weight': float(gmm.weights_[compromised_idx]),
                 'n_cells': int(n_compromised)
             },
             'healthy': {
                 'idx': int(healthy_idx),
-                'mito_mean': float(means_original[healthy_idx, 0]),
-                'residual_mean': float(means_original[healthy_idx, 1]),
+                'residual_mean': float(means_original[healthy_idx, 0]),  # residual is first
+                'mito_mean': float(means_original[healthy_idx, 1]),  # mito is second
                 'weight': float(gmm.weights_[healthy_idx]),
                 'n_cells': int(n_healthy)
             }
@@ -134,13 +137,15 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
         'bic': float(gmm.bic(features_scaled)),
         'aic': float(gmm.aic(features_scaled)),
         'posteriors': posteriors,  # Return full posterior array
-        'compromised_idx': compromised_idx
+        'compromised_idx': compromised_idx,
+        'gmm_model': gmm,  # Return the GMM model for plotting
+        'scaler': scaler  # Return the scaler for plotting
     }
     
     return results
 
 
-def save_qc_cell_lists(adata, output_path, config=None):
+def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_output=None):
     """Save cell filtering decisions for multiple QC methods.
     
     Args:
@@ -156,18 +161,6 @@ def save_qc_cell_lists(adata, output_path, config=None):
     # Get mitochondrial values
     mito_values = adata.obs['pct_counts_mt'].values
     
-    # Calculate basic statistics for simple methods
-    median = np.median(mito_values)
-    mad = median_abs_deviation(mito_values)
-    
-    # MAD-based methods
-    cell_lists['median_plus_2mad'] = mito_values < (median + 2 * mad)
-    cell_lists['median_plus_3mad'] = mito_values < (median + 3 * mad)
-    
-    # Percentile-based methods
-    cell_lists['percentile_95'] = mito_values < np.percentile(mito_values, 95)
-    cell_lists['percentile_99'] = mito_values < np.percentile(mito_values, 99)
-    
     # 2D GMM method (DEFAULT)
     if 'total_counts' in adata.obs.columns and 'n_genes' in adata.obs.columns:
         # Calculate 2D GMM
@@ -177,44 +170,174 @@ def save_qc_cell_lists(adata, output_path, config=None):
             adata.obs['n_genes'].values
         )
         
-        if gmm_2d_stats['converged']:
-            # Get the posterior probabilities from the returned stats
-            posteriors = gmm_2d_stats['posteriors']
-            compromised_idx = gmm_2d_stats['compromised_idx']
-            
-            # Get probability of being compromised
-            prob_compromised = posteriors[:, compromised_idx]
-            
-            # Set filtering decisions (True = keep cell, False = filter out)
-            cell_lists['gmm_2d_posterior_75'] = prob_compromised < 0.75
-            cell_lists['gmm_2d_posterior_50'] = prob_compromised < 0.50
-            cell_lists['gmm_2d_posterior_90'] = prob_compromised < 0.90
-            
-            # IMPORTANT: Save the continuous posterior probability for plotting
-            cell_lists['gmm_2d_posterior_prob'] = prob_compromised
-            
-        else:
-            # GMM failed - raise error if GMM is the requested method
-            error_msg = gmm_2d_stats.get('error', 'Unknown error')
-            
-            # Check if GMM is the requested QC method in config
-            requested_qc_method = config.get('combined_sublibraries', {}).get('qc_method', 'gmm_2d_posterior_75')
-            
-            if 'gmm' in requested_qc_method.lower():
-                # GMM is requested but failed - raise error
-                raise RuntimeError(
-                    f"2D GMM failed to converge: {error_msg}\n"
-                    f"The requested QC method '{requested_qc_method}' cannot be used.\n"
-                    f"Please change config['combined_sublibraries']['qc_method'] to one of:\n"
-                    f"  - median_plus_2mad\n"
-                    f"  - median_plus_3mad\n"
-                    f"  - percentile_95\n"
-                    f"  - percentile_99\n"
+        # Always get the posterior probabilities
+        posteriors = gmm_2d_stats['posteriors']
+        compromised_idx = gmm_2d_stats['compromised_idx']
+        
+        # Get probability of being compromised
+        prob_compromised = posteriors[:, compromised_idx]
+        
+        # Save the continuous posterior probability
+        cell_lists['gmm_posterior_prob_compromised'] = prob_compromised
+        
+        # Create debug plots if requested
+        if save_plots and plot_output:
+                # Use the provided plot output path
+                plot_dir = os.path.dirname(plot_output)
+                os.makedirs(plot_dir, exist_ok=True)
+                plot_path = plot_output
+                
+                print(f"\nGenerating combined debug plot...")
+                
+                # Get the regression residuals (recalculate for plotting)
+                log_umis = np.log1p(adata.obs['total_counts'].values)
+                log_genes = np.log1p(adata.obs['n_genes'].values)
+                
+                # Fit regression again for residuals
+                lr = LinearRegression()
+                lr.fit(log_umis.reshape(-1, 1), log_genes)
+                predicted_log_genes = lr.predict(log_umis.reshape(-1, 1))
+                residuals = log_genes - predicted_log_genes
+                
+                # Create combined figure with 1x3 layout (no 3D plot)
+                fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+                
+                # Plot 1: UMIs vs Genes BEFORE regression (left)
+                ax1 = axes[0]
+                scatter1 = ax1.scatter(
+                    log_umis,
+                    log_genes,
+                    c=prob_compromised,
+                    cmap='RdYlBu_r',
+                    s=3,
+                    alpha=0.6,
+                    edgecolors='none'
                 )
-            else:
-                # GMM failed but user is using a different method anyway
-                print(f"  Note: 2D GMM failed to converge ({error_msg}), but this is OK")
-                print(f"  since you're using '{requested_qc_method}' for QC filtering")
+                ax1.plot(log_umis, predicted_log_genes, 'g-', alpha=0.5, linewidth=2, label='Regression line')
+                ax1.set_xlabel('Log(Total UMIs)', fontsize=10)
+                ax1.set_ylabel('Log(Number of genes)', fontsize=10)
+                ax1.set_title('Before Regression\n(Gene-UMI Relationship)', fontsize=11)
+                ax1.legend(fontsize=8)
+                plt.colorbar(scatter1, ax=ax1, label='P(Compromised)')
+                
+                # Plot 2: UMIs vs Residuals AFTER regression (middle)
+                ax2 = axes[1]
+                scatter2 = ax2.scatter(
+                    log_umis,
+                    residuals,
+                    c=prob_compromised,
+                    cmap='RdYlBu_r',
+                    s=3,
+                    alpha=0.6,
+                    edgecolors='none'
+                )
+                ax2.axhline(y=0, color='g', linestyle='-', alpha=0.5, linewidth=1)
+                ax2.set_xlabel('Log(Total UMIs)', fontsize=10)
+                ax2.set_ylabel('Gene-UMI Residuals', fontsize=10)
+                ax2.set_title('After Regression\n(Residuals vs UMIs)', fontsize=11)
+                plt.colorbar(scatter2, ax=ax2, label='P(Compromised)')
+                
+                # Plot 3: The actual 2D GMM features with contours - Mitochondrial % vs Residuals (right)
+                ax3 = axes[2]
+                scatter3 = ax3.scatter(
+                    residuals,
+                    mito_values,
+                    c=prob_compromised,
+                    cmap='RdYlBu_r',
+                    s=3,
+                    alpha=0.6,
+                    edgecolors='none'
+                )
+                
+                # Add GMM contour ellipses
+                gmm_model = gmm_2d_stats['gmm_model']
+                scaler = gmm_2d_stats['scaler']
+                
+                # Draw confidence ellipses for each component
+                def draw_ellipse(ax, mean, cov, color, label, n_std=2.0):
+                    """Draw confidence ellipse for a 2D Gaussian."""
+                    # Get eigenvalues and eigenvectors
+                    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                    order = eigenvalues.argsort()[::-1]
+                    eigenvalues, eigenvectors = eigenvalues[order], eigenvectors[:, order]
+                    
+                    # Calculate angle and dimensions
+                    angle = np.degrees(np.arctan2(*eigenvectors[:, 0][::-1]))
+                    width, height = 2 * n_std * np.sqrt(eigenvalues)
+                    
+                    # Create and add ellipse
+                    ellipse = Ellipse(mean, width, height, angle=angle,
+                                     facecolor='none', edgecolor=color, 
+                                     linewidth=2, linestyle='-', alpha=0.8,
+                                     label=label)
+                    ax.add_patch(ellipse)
+                    return ellipse
+                
+                # Get component parameters in original space
+                for comp_idx, (comp_name, comp_color) in enumerate([('healthy', 'blue'), ('compromised', 'red')]):
+                    comp_key = gmm_2d_stats['components'][comp_name]['idx']
+                    
+                    # Transform mean and covariance back to original space
+                    mean_scaled = gmm_model.means_[comp_key]
+                    cov_scaled = gmm_model.covariances_[comp_key]
+                    
+                    # Inverse transform to get original space parameters
+                    mean_original = scaler.inverse_transform(mean_scaled.reshape(1, -1))[0]
+                    
+                    # For covariance, we need to account for the scaling
+                    scale = scaler.scale_
+                    cov_original = cov_scaled * np.outer(scale, scale)
+                    
+                    # Draw 1-sigma and 2-sigma ellipses
+                    draw_ellipse(ax3, mean_original, cov_original, comp_color, 
+                               f'{comp_name.capitalize()} (2σ)', n_std=2.0)
+                    draw_ellipse(ax3, mean_original, cov_original, comp_color, 
+                               None, n_std=1.0)
+                    
+                    # Plot component means
+                    ax3.plot(mean_original[0], mean_original[1], 'o', 
+                            color=comp_color, markersize=10, markeredgecolor='black',
+                            markeredgewidth=1, label=f'{comp_name.capitalize()} mean')
+                
+                ax3.set_xlabel('Gene-UMI Residuals', fontsize=10)
+                ax3.set_ylabel('% Mitochondrial', fontsize=10)
+                ax3.set_title('2D GMM Features with Contours\n(Used for clustering)', fontsize=11, fontweight='bold')
+                ax3.legend(fontsize=8, loc='best')
+                plt.colorbar(scatter3, ax=ax3, label='P(Compromised)')
+                
+                # Add text annotation with statistics
+                n_filtered_75 = np.sum(prob_compromised > 0.75)
+                pct_filtered_75 = 100 * n_filtered_75 / len(prob_compromised)
+                n_filtered_50 = np.sum(prob_compromised > 0.50)
+                pct_filtered_50 = 100 * n_filtered_50 / len(prob_compromised)
+                
+                # Add statistics as text box on the figure
+                textstr = f'Filtering Statistics:\n'
+                textstr += f'P>0.50: {n_filtered_50:,} cells ({pct_filtered_50:.1f}%)\n'
+                textstr += f'P>0.75: {n_filtered_75:,} cells ({pct_filtered_75:.1f}%) [DEFAULT]\n'
+                textstr += f'\nCluster Parameters:\n'
+                textstr += f'Compromised: {gmm_2d_stats["components"]["compromised"]["mito_mean"]:.1f}% mito, {gmm_2d_stats["components"]["compromised"]["residual_mean"]:.2f} resid\n'
+                textstr += f'Healthy: {gmm_2d_stats["components"]["healthy"]["mito_mean"]:.1f}% mito, {gmm_2d_stats["components"]["healthy"]["residual_mean"]:.2f} resid\n'
+                textstr += f'\nGMM Weights: Comp={gmm_2d_stats["components"]["compromised"]["weight"]:.2f}, Healthy={gmm_2d_stats["components"]["healthy"]["weight"]:.2f}'
+                
+                # Place text box in the right plot
+                ax3.text(0.02, 0.98, textstr, transform=ax3.transAxes,
+                        fontsize=8, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
+                
+                # Overall title
+                sample_id = adata.obs.get("sample_id", ["unknown"])[0]
+                convergence_text = "Converged" if gmm_2d_stats['converged'] else "Not Converged (Warning)"
+                plt.suptitle(f'GMM Quality Control Debug - Sample: {sample_id} - {convergence_text}\n'
+                            f'Total cells: {len(prob_compromised):,} | '
+                            f'Color: Red = Compromised, Blue = Healthy', 
+                            fontsize=12, fontweight='bold')
+                
+                plt.tight_layout()
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                
+                print(f"  Combined debug plot saved to: {plot_path}")
             
     else:
         raise ValueError("Missing required data (total_counts or n_genes) for 2D GMM calculation")
@@ -223,14 +346,13 @@ def save_qc_cell_lists(adata, output_path, config=None):
     cell_lists.to_csv(output_path, sep='\t', index=False)
     
     # Print summary
-    print("\nQC filtering summary:")
-    for col in cell_lists.columns:
-        if col not in ['barcode', 'gmm_2d_posterior_prob']:  # Skip continuous column
-            n_keep = cell_lists[col].sum()
-            n_total = len(cell_lists)
-            pct_keep = 100 * n_keep / n_total
-            default_marker = " (DEFAULT)" if col == 'gmm_2d_posterior_75' else ""
-            print(f"  {col}{default_marker}: {n_keep:,}/{n_total:,} cells ({pct_keep:.1f}%)")
+    print("\nQC summary:")
+    prob_comp = cell_lists['gmm_posterior_prob_compromised']
+    convergence_status = "converged" if gmm_2d_stats['converged'] else "did not converge (using best fit)"
+    print(f"  GMM {convergence_status}")
+    print(f"  Cells with P(compromised) > 0.50: {(prob_comp > 0.50).sum():,}/{len(prob_comp):,} ({100*(prob_comp > 0.50).mean():.1f}%)")
+    print(f"  Cells with P(compromised) > 0.75: {(prob_comp > 0.75).sum():,}/{len(prob_comp):,} ({100*(prob_comp > 0.75).mean():.1f}%)")
+    print(f"  Mean P(compromised): {prob_comp.mean():.3f}")
     
     print(f"\nSaved cell lists to: {output_path}")
 
@@ -238,7 +360,9 @@ def save_qc_cell_lists(adata, output_path, config=None):
 def main():
     parser = argparse.ArgumentParser(description='Generate QC cell filtering decisions')
     parser.add_argument('--h5ad', required=True, help='Annotated h5ad file')
+    parser.add_argument('--cell-barcodes', required=True, help='File with called cell barcodes')
     parser.add_argument('--output', required=True, help='Output TSV file for cell lists')
+    parser.add_argument('--plot-output', help='Output path for GMM debug plot')
     parser.add_argument('--config', help='Config YAML file')
     
     args = parser.parse_args()
@@ -249,10 +373,20 @@ def main():
         with open(args.config) as f:
             config = yaml.safe_load(f)
     
+    # Load called cell barcodes
+    print(f"Loading called cell barcodes: {args.cell_barcodes}")
+    with open(args.cell_barcodes) as f:
+        called_cells = set(line.strip() for line in f)
+    print(f"Loaded {len(called_cells):,} called cell barcodes")
+    
     # Load h5ad file
     print(f"Loading h5ad file: {args.h5ad}")
     adata = sc.read_h5ad(args.h5ad)
-    print(f"Loaded {adata.n_obs} barcodes x {adata.n_vars} genes")
+    print(f"Loaded {adata.n_obs:,} total barcodes x {adata.n_vars:,} genes")
+    
+    # Filter to called cells only
+    adata = adata[adata.obs_names.isin(called_cells)]
+    print(f"Filtered to {adata.n_obs:,} called cells")
     
     # Ensure we have the necessary QC metrics
     required_columns = ['pct_counts_mt', 'total_counts', 'n_genes_by_counts']
@@ -270,7 +404,7 @@ def main():
         raise ValueError(f"Required QC metrics missing from h5ad file: {missing_columns}")
     
     # Generate and save cell lists
-    save_qc_cell_lists(adata, args.output, config)
+    save_qc_cell_lists(adata, args.output, config, save_plots=True, plot_output=args.plot_output)
 
 
 if __name__ == "__main__":

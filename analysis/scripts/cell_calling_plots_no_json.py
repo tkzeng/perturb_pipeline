@@ -26,9 +26,9 @@ def load_cell_calling_results(cell_calling_dir, sample_id):
     summary_file = results_dir / "results.tsv"
     summary_df = pd.read_csv(summary_file, sep='\\t')
     
-    # Load DropletUtils detailed results (includes both EmptyDrops and BarcodeRanks)
-    dropletutils_file = results_dir / "dropletutils_results.tsv"
-    dropletutils_df = pd.read_csv(dropletutils_file, sep='\\t')
+    # Load BarcodeRanks detailed results
+    barcoderanks_file = results_dir / f"{sample_id}_barcoderanks.tsv"
+    dropletutils_df = pd.read_csv(barcoderanks_file, sep='\t')
     
     # Reconstruct methods_results dictionary
     methods_results = {}
@@ -63,7 +63,7 @@ def load_read_statistics(read_stats_file):
 def create_barcode_rank_plot_by_method(adata, methods_results, sample_id, 
                                        output_dir, plot_dir, pool, source, processing, read_stats=None, 
                                        dropletutils_df=None):
-    """Create separate barcode rank plots for each cell calling method with dedicated fitted spline plot."""
+    """Create separate barcode rank plots for each cell calling method."""
     # Calculate total UMIs per barcode
     total_counts = np.array(adata.X.sum(axis=1)).flatten()
     total_counts_sorted = np.sort(total_counts)[::-1]
@@ -73,9 +73,8 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
     methods = sorted(methods_results.keys())
     n_methods = len(methods)
     
-    # Calculate grid size to accommodate methods + fitted spline plot
-    # Add 1 for the fitted spline subplot
-    total_subplots_needed = n_methods + 1
+    # Calculate grid size to accommodate methods
+    total_subplots_needed = n_methods
     n_cols = 3
     n_rows = (total_subplots_needed + n_cols - 1) // n_cols  # Ceiling division
     
@@ -138,56 +137,6 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
         ax.set_xlim(1, len(ranks))
         ax.set_ylim(1, max(total_counts_sorted))
     
-    # Add dedicated fitted spline subplot (after all methods)
-    spline_position = n_methods + 1  # Position after all method subplots
-    if dropletutils_df is not None and 'br_fitted' in dropletutils_df.columns and 'br_rank' in dropletutils_df.columns:
-        ax_spline = plt.subplot(n_rows, n_cols, spline_position)
-        
-        # Plot all barcodes as background
-        ax_spline.loglog(ranks, total_counts_sorted, 'k-', alpha=0.3, linewidth=1, label='All barcodes')
-        
-        # Get fitted spline data
-        fitted_data = dropletutils_df[['br_rank', 'br_fitted', 'total_counts']].copy()
-        fitted_data = fitted_data.dropna(subset=['br_fitted', 'br_rank'])
-        
-        if len(fitted_data) > 0:
-            fitted_data = fitted_data.sort_values('br_rank')
-            
-            # Plot the fitted spline prominently
-            ax_spline.plot(fitted_data['br_rank'], fitted_data['br_fitted'], 
-                          color='limegreen', linestyle='-', linewidth=3, alpha=0.9, 
-                          label='Fitted spline', zorder=5)
-            
-            # Add knee and inflection thresholds if they exist
-            knee_method = 'BarcodeRanks_Knee'
-            inflection_method = 'BarcodeRanks_Inflection'
-            
-            if knee_method in methods_results:
-                knee_threshold = methods_results[knee_method]['threshold']
-                if knee_threshold > 0:
-                    ax_spline.axhline(y=knee_threshold, color='red', linestyle='--', alpha=0.7, 
-                                     linewidth=2, label=f'Knee: {knee_threshold:.0f}')
-                    knee_rank = np.searchsorted(-total_counts_sorted, -knee_threshold) + 1
-                    ax_spline.axvline(x=knee_rank, color='red', linestyle=':', alpha=0.5)
-            
-            if inflection_method in methods_results:
-                inflection_threshold = methods_results[inflection_method]['threshold']
-                if inflection_threshold > 0:
-                    ax_spline.axhline(y=inflection_threshold, color='blue', linestyle='--', alpha=0.7,
-                                     linewidth=2, label=f'Inflection: {inflection_threshold:.0f}')
-                    inflection_rank = np.searchsorted(-total_counts_sorted, -inflection_threshold) + 1
-                    ax_spline.axvline(x=inflection_rank, color='blue', linestyle=':', alpha=0.5)
-        
-        # Customize subplot
-        ax_spline.set_xlabel('Barcode Rank', fontsize=10)
-        ax_spline.set_ylabel('UMI Counts', fontsize=10)
-        ax_spline.set_title('BarcodeRanks Fitted Spline\n(Knee & Inflection Detection)', 
-                           fontsize=12, fontweight='bold')
-        ax_spline.legend(fontsize=8, loc='upper right')
-        ax_spline.grid(True, alpha=0.3)
-        ax_spline.set_xlim(1, len(ranks))
-        ax_spline.set_ylim(1, max(total_counts_sorted))
-    
     # Remove any empty subplots
     for idx in range(total_subplots_needed, n_rows * n_cols):
         fig.delaxes(plt.subplot(n_rows, n_cols, idx + 1))
@@ -241,9 +190,7 @@ def create_cell_calling_summary_plot(adata, methods_results, dropletutils_df, sa
         threshold = methods_results[method]['threshold']
         
         # Format threshold based on method type
-        if method.startswith('EmptyDrops'):
-            threshold_str = f"FDR {threshold}"
-        elif threshold > 0:
+        if threshold > 0:
             threshold_str = f"Thr: {threshold:.0f}"
         else:
             threshold_str = ""

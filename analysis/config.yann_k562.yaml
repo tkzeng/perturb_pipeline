@@ -78,31 +78,20 @@ input_paths:
 # Cell calling parameters
 cell_calling:
   # Methods to run (comment out any methods you want to skip)
-  # Available methods: Expected_Cells, UMI_Threshold, 
-  #                   EmptyDrops_FDR_X (where X is the FDR cutoff, e.g., EmptyDrops_FDR_0.001),
-  #                   BarcodeRanks_Knee, BarcodeRanks_Inflection
-  #
-  # DEPRECATED: EmptyDrops methods are deprecated
-  #   - Found to be too lenient for current data, producing too many false positive cells
-  #   - BarcodeRanks methods (Knee/Inflection) are recommended instead
-  #   - EmptyDrops code is preserved but not actively maintained
+  # Available methods: Expected_Cells, UMI_Threshold, BarcodeRanks_Knee, BarcodeRanks_Inflection
   methods_to_run:
     - Expected_Cells
     - UMI_Threshold
-    # - EmptyDrops_FDR_0.001  # DEPRECATED - too lenient for current data
-    # - EmptyDrops_FDR_0.01   # DEPRECATED - too lenient for current data  
-    # - EmptyDrops_FDR_0.05   # DEPRECATED - too lenient for current data
     - BarcodeRanks_Knee
     - BarcodeRanks_Inflection
   
   # Default method to use for saturation analysis and other downstream analyses
-  default_method: "Expected_Cells"
+  default_method: "BarcodeRanks_Knee"
   
   # Default parameters (will be overridden by sample_info.tsv values)
   defaults:
     expected_cells: 5000
     min_umi_threshold: 100
-    emptydrops_lower: 100  # DEPRECATED - kept for backwards compatibility
     saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
 
 # Barcode recovery parameters
@@ -121,21 +110,8 @@ qc_analysis:
 # Sublibrary filtering parameters
 sublibrary_filtering:
   guide_assignment_cutoff: 5
-  skip_barcode_filtering: true
   min_umi_filter: 100
 
-# QC filtering parameters
-qc_filtering:
-  gmm_fallback_method: "percentile_95"  # Fallback method when 2D GMM doesn't converge
-
-# Cell quality filtering thresholds
-# NOTE: These are currently UNUSED in the pipeline - apply_cell_filters() is never called
-# TODO: Remove or implement cell filtering in the pipeline
-# cell_filtering:
-#   max_total_counts: 40000
-#   max_mt_percent: 20
-#   min_genes: 1000
-#   default_min_counts: 2000
 
 # Resource allocation for different rule groups
 # Adjust these based on your dataset size and cluster capabilities
@@ -166,17 +142,12 @@ combination:
 # Combined sublibraries configuration
 combined_sublibraries:
   # Cell calling method to use for creating combined sublibrary files
-  # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
-  #          BarcodeRanks_Knee, BarcodeRanks_Inflection
+  # Options: Expected_Cells, UMI_Threshold, BarcodeRanks_Knee, BarcodeRanks_Inflection
   cell_calling_method: "Expected_Cells"
   # Output directory for combined sublibrary files (relative to results_base)
   output_dir: "combined_sublibraries"
   # Pools to include (empty list means all pools)
   pools: []
-  # QC filtering method to use (from qc_cell_lists.tsv columns)
-  # Options: gmm_2d_posterior_75, gmm_2d_posterior_50, gmm_2d_posterior_90,
-  #          median_plus_2mad, median_plus_3mad, percentile_95, percentile_99
-  qc_method: "gmm_2d_posterior_75"
 
 # Standard analyses configuration
 standard_analyses:
@@ -186,11 +157,32 @@ standard_analyses:
   guide_assignment_cutoff: 5  # Threshold for guide assignment in target gene analysis
   n_hvgs: 2000  # Number of highly variable genes
   clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
+  n_neighbors: 15  # Number of neighbors for UMAP calculation
+  n_pcs: 15  # Number of principal components to use for neighbors/UMAP
   
-  # Subset cells for differential expression analysis
-  de_analysis_subsets:
-    column: ""  # Empty string to analyze all cells together, or "condition" for specific column
-    values: []  # Empty list when no subsetting, or ["condition1", "condition2"] for specific values
+  # Single definition of analysis subsets used for both UMAP and DE
+  analysis_subsets:
+    - name: "low_mito"
+      filter: "adata.obs['gmm_posterior_prob_compromised'] < 0.75"
+    - name: "high_mito"
+      filter: "adata.obs['gmm_posterior_prob_compromised'] >= 0.75"
   
   # Non-targeting guide identifiers
   non_targeting_strings: []  # Empty list for no non-targeting analysis, or ["non-targeting", "non.targeting"]
+  
+  # Scoring groups configuration (filter-based groups for DE analysis)
+  # First group is reference, second group is test
+  scoring_groups:
+    guide_moi:
+      - name: "low_MOI"
+        filter: "adata.obs['n_guides_total'] <= 1"
+      - name: "high_MOI"
+        filter: "adata.obs['n_guides_total'] > 1"
+    
+    # Additional scoring groups can be added here
+    # Example:
+    # mito_level:
+    #   - name: "low_mito"
+    #     filter: "adata.obs['pct_counts_mt'] < 10"
+    #   - name: "high_mito"
+    #     filter: "adata.obs['pct_counts_mt'] >= 10"

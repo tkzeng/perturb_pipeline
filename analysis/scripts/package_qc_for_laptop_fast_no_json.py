@@ -30,7 +30,7 @@ def parse_args():
                         default='scripts/streamlit_qc_dashboard_no_json.py',
                         help='Path to Streamlit dashboard script')
     parser.add_argument('--per-cell-method-filter', default=None,
-                        help='Filter per_cell plots to only include this method (e.g., EmptyDrops_FDR001)')
+                        help='Filter per_cell plots to only include this method (e.g., BarcodeRanks_Knee)')
     parser.add_argument('--guide-cutoff-filter', default=None,
                         help='Comma-separated list of guide cutoffs to include (e.g., 1,2)')
     parser.add_argument('--threads', type=int, default=8,
@@ -137,6 +137,12 @@ def create_archive_directly(args):
     output_path = Path(args.output_archive)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
+    # Extract the base folder name from the archive name
+    # e.g., qc_dashboard_downstream_20241115_143022.tar.gz -> qc_dashboard_downstream_20241115_143022
+    folder_name = output_path.stem  # Removes .gz
+    if folder_name.endswith('.tar'):
+        folder_name = folder_name[:-4]  # Remove .tar if present
+    
     # Create archive
     start_time = time.time()
     
@@ -150,15 +156,15 @@ def create_archive_directly(args):
             print("  Adding dashboard files...")
             
             # Add dashboard script
-            tar.add(args.dashboard_script, arcname='qc_dashboard/streamlit_qc_dashboard.py')
+            tar.add(args.dashboard_script, arcname=f'{folder_name}/streamlit_qc_dashboard.py')
             
             # Add sample info
-            tar.add(args.sample_info, arcname='qc_dashboard/sample_info.xlsx')
+            tar.add(args.sample_info, arcname=f'{folder_name}/sample_info.xlsx')
             
             # Add metric glossary if it exists
             metric_glossary_path = Path(args.dashboard_script).parent / 'metric_glossary.tsv'
             if metric_glossary_path.exists():
-                tar.add(metric_glossary_path, arcname='qc_dashboard/metric_glossary.tsv')
+                tar.add(metric_glossary_path, arcname=f'{folder_name}/metric_glossary.tsv')
             
             # Create and add run script
             run_script_content = """#!/bin/bash
@@ -173,7 +179,7 @@ streamlit run streamlit_qc_dashboard.py --server.port 8501
 
 echo "Dashboard stopped."
 """
-            info, fileobj = create_text_file('qc_dashboard/run_dashboard.sh', run_script_content)
+            info, fileobj = create_text_file(f'{folder_name}/run_dashboard.sh', run_script_content)
             info.mode = 0o755  # Make executable
             tar.addfile(tarinfo=info, fileobj=fileobj)
             
@@ -187,7 +193,7 @@ REQUIREMENTS:
 
 TO RUN:
 1. Extract this archive
-2. cd qc_dashboard
+2. cd {folder_name}
 3. ./run_dashboard.sh
    (or: streamlit run streamlit_qc_dashboard.py)
 
@@ -205,7 +211,7 @@ NOTES:
 - Plot metadata is inferred from file paths and names
 - Metric descriptions are defined in metric_glossary.tsv
 """
-            info, fileobj = create_text_file('qc_dashboard/README.txt', readme_content)
+            info, fileobj = create_text_file(f'{folder_name}/README.txt', readme_content)
             tar.addfile(tarinfo=info, fileobj=fileobj)
             
             # Add plots
@@ -219,14 +225,14 @@ NOTES:
                 if 'qc_report' in plot_path.parts:
                     # Find index of 'qc_report' and take everything after it
                     idx = plot_path.parts.index('qc_report')
-                    arcname = 'qc_dashboard/' + '/'.join(plot_path.parts[idx+1:])
+                    arcname = f'{folder_name}/' + '/'.join(plot_path.parts[idx+1:])
                 else:
                     # Fallback to preserving structure after 'plots'
                     if 'plots' in plot_path.parts:
                         idx = plot_path.parts.index('plots')
-                        arcname = 'qc_dashboard/' + '/'.join(plot_path.parts[idx:])
+                        arcname = f'{folder_name}/' + '/'.join(plot_path.parts[idx:])
                     else:
-                        arcname = 'qc_dashboard/plots/' + plot_path.name
+                        arcname = f'{folder_name}/plots/' + plot_path.name
                 
                 tar.add(plot_file, arcname=arcname)
             
@@ -240,13 +246,13 @@ NOTES:
                 data_path = Path(data_file)
                 if 'qc_report' in data_path.parts:
                     idx = data_path.parts.index('qc_report')
-                    arcname = 'qc_dashboard/' + '/'.join(data_path.parts[idx+1:])
+                    arcname = f'{folder_name}/' + '/'.join(data_path.parts[idx+1:])
                 else:
                     if 'data' in data_path.parts:
                         idx = data_path.parts.index('data')
-                        arcname = 'qc_dashboard/' + '/'.join(data_path.parts[idx:])
+                        arcname = f'{folder_name}/' + '/'.join(data_path.parts[idx:])
                     else:
-                        arcname = 'qc_dashboard/data/' + data_path.name
+                        arcname = f'{folder_name}/data/' + data_path.name
                 
                 tar.add(data_file, arcname=arcname)
         

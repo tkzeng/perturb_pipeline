@@ -146,6 +146,13 @@ def parse_path_metadata(file_path, base_path):
                 if len(parts) > 4:
                     metadata['scale'] = parts[4]  # Always linear for cell calling plots
             
+            elif category.startswith('umap'):
+                # Fixed structure: umap/{source}_{processing}/{umap_subset}/{de_subset}/{metric}/plot.png
+                
+                metadata['umap_subset'] = parts[2]  # e.g., "all_cells_umap", "low_mito", "high_mito"
+                metadata['de_subset'] = parts[3]    # e.g., "all_cells_scores", "low_mito", "high_mito" 
+                metadata['metric'] = parts[4]       # e.g., "pct_counts_mt", "guide_moi_score_pos"
+            
             # Handle any other categories generically
             else:
                 for i in range(2, len(parts)):

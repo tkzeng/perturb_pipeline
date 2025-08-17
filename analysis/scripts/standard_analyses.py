@@ -22,7 +22,7 @@ import scipy
 import matplotlib.pyplot as plt
 import gc
 # Removed gffutils import - gene annotations done in sublibrary_annotation
-from matplotlib.backends.backend_pdf import PdfPages
+# Removed PdfPages import - UMAP plotting moved to separate script
 
 # GPU acceleration support
 try:
@@ -144,25 +144,55 @@ def _score_gene_list(adata_main, gene_list, score_name, use_gpu=False):
 # SIMPLIFIED UNIFIED SCORING SYSTEM
 # ============================================================================
 
-def apply_stratification(adata, base_samples, stratify_by, stratify_values):
-    """Apply stratification strategy to sample selection."""
-    if stratify_by is None or stratify_by == "":
-        return {"all": base_samples}
-
-    if stratify_by not in adata.obs.columns:
-        raise ValueError(f"Stratification column '{stratify_by}' not found in adata.obs")
-
-    stratified_samples = {}
-    for value in stratify_values:
-        mask = adata.obs[stratify_by].astype(str).str.contains(str(value), na=False)
-        filtered_samples = list(set(adata.obs.loc[mask, "sample"]))
-        filtered_samples = [s for s in filtered_samples if s in base_samples]
-
-        if filtered_samples:
-            stratified_samples[value] = filtered_samples
-            log_print(f"  Stratification '{value}': {len(filtered_samples)} samples")
-
-    return stratified_samples
+def apply_subset_filters(adata, subset_configs, min_cells=0):
+    """Apply subset filters to create cell masks.
+    
+    Unified function used by both DE analysis and UMAP subset generation.
+    Each config contains a 'name' and 'filter' expression.
+    
+    Args:
+        adata: AnnData object
+        subset_configs: List of subset configs with 'name' and 'filter'
+        min_cells: Minimum cells required for a subset (default 0)
+    
+    Returns dict of subset_name -> cell_mask (boolean array)
+    """
+    import numpy as np
+    import pandas as pd
+    
+    subset_masks = {}
+    
+    # Always include all_cells_scores as a subset (represents no DE filtering)
+    subset_masks["all_cells_scores"] = np.ones(len(adata), dtype=bool)
+    log_print(f"  Subset 'all_cells_scores': {len(adata)} cells (no DE filtering)")
+    
+    if not subset_configs:
+        # No additional subsetting - only all cells
+        return subset_masks
+    
+    for config in subset_configs:
+        subset_name = config['name']
+        subset_filter = config['filter']
+        
+        # Apply filter to get cell mask
+        eval_context = {
+            "adata": adata,
+            "np": np,
+            "pd": pd
+        }
+        mask = eval(subset_filter, eval_context)
+        
+        # Ensure mask is boolean array
+        mask = np.asarray(mask, dtype=bool)
+        n_cells = mask.sum()
+        
+        if n_cells >= min_cells:
+            subset_masks[subset_name] = mask
+            log_print(f"  Subset '{subset_name}': {n_cells} cells")
+        else:
+            log_print(f"  Subset '{subset_name}': {n_cells} cells (below minimum {min_cells}, skipping)")
+    
+    return subset_masks
 
 
 def target_gene_strategy(adata, group_def, cutoff, non_targeting_strings):
@@ -214,56 +244,96 @@ def target_gene_strategy(adata, group_def, cutoff, non_targeting_strings):
     }
 
 
-def guide_strategy(adata, group_def):
-    """Strategy for guide MOI groupings: high vs low guide count"""
-    # Use existing guides_per_cell from sublibrary_annotation
-    # Use existing guides_per_cell from sublibrary_annotation
-    guide_col = 'n_guides_total' if 'n_guides_total' in adata.obs else 'guides_per_cell'
-    categories = (adata.obs[guide_col] > 1).map({True: 'high', False: 'low'}).astype('category')
-
-    log_print(f"  Created guide_category: {categories.value_counts().to_dict()}")
-
+def filter_group_strategy(adata, group_def):
+    """Filter-based grouping strategy for differential expression.
+    
+    group_def should be a list of dicts with 'name' and 'filter'.
+    First group is reference, second group is test.
+    """
+    if len(group_def) != 2:
+        raise ValueError(f"filter_group_strategy requires exactly 2 groups, got {len(group_def)}")
+    
+    # First group is reference, second is test
+    reference_group = group_def[0]['name']
+    test_group = group_def[1]['name']
+    
+    # Create categories series
+    categories = pd.Series('other', index=adata.obs.index)
+    
+    # Apply each filter
+    for group in group_def:
+        group_name = group['name']
+        filter_expr = group['filter']
+        
+        # Evaluate filter expression
+        mask = eval(filter_expr)
+        categories.loc[mask] = group_name
+        log_print(f"    Group '{group_name}': {mask.sum()} cells")
+    
+    categories = categories.astype('category')
+    
+    # Generate group name based on test vs reference
+    group_name = f"{test_group}_vs_{reference_group}"
+    score_prefix = group_name
+    
+    log_print(f"  Created {group_name}: {categories.value_counts().to_dict()}")
+    
     return {
-        "group_name": "guide_category",
+        "group_name": group_name,
         "categories": categories,
-        "test_group": "high",
-        "reference_group": "low",
-        "score_prefix": "guide"
+        "test_group": test_group,
+        "reference_group": reference_group,
+        "score_prefix": score_prefix
     }
 
 
 def cluster_strategy(adata, group_def):
-    """Strategy for leiden cluster groupings: specific cluster vs rest"""
-    # Find leiden result with target number of clusters
+    """Strategy for cluster groupings: specific cluster vs rest"""
+    # Find clustering result closest to target number of clusters
     target_clusters = group_def
-    best_resolution = None
+    best_col = None
+    best_n_clusters = None
+    min_diff = float('inf')
 
     for col in adata.obs.columns:
-        if col.startswith('leiden_'):
-            n_clusters = adata.obs[col].nunique()
-            if n_clusters == target_clusters:
-                best_resolution = col.replace('leiden_', '')
+        if col.startswith('clusters') and '_res' in col:
+            # Extract number of clusters from column name (e.g., clusters3_res0.15 -> 3)
+            n_clusters = int(col.split('_')[0].replace('clusters', ''))
+            diff = abs(n_clusters - target_clusters)
+            
+            # Update if this is closer to target, or same distance but fewer clusters (prefer simpler)
+            if diff < min_diff or (diff == min_diff and n_clusters < best_n_clusters):
+                min_diff = diff
+                best_col = col
+                best_n_clusters = n_clusters
+                
+            # If exact match found, use it immediately
+            if diff == 0:
                 break
 
-    if best_resolution is None:
-        log_print(f"  ⚠️  No leiden clustering found with {target_clusters} clusters - skipping")
-        return None  # Signal to skip this grouping
+    if best_col is None:
+        raise ValueError(f"No clustering results found in adata.obs")
 
-    leiden_col = f"leiden_{best_resolution}"
-    categories = adata.obs[leiden_col].astype('category')
+    categories = adata.obs[best_col].astype('category')
 
-    log_print(f"  Using {leiden_col}: {categories.value_counts().to_dict()}")
+    if best_n_clusters != target_clusters:
+        log_print(f"  ⚠️  No exact match for {target_clusters} clusters - using closest: {best_col} with {best_n_clusters} clusters")
+    else:
+        log_print(f"  Using {best_col}: {categories.value_counts().to_dict()}")
 
+    # Column name already has the format we want
     return {
-        "group_name": f"clusters_{target_clusters}",
+        "group_name": best_col,
         "categories": categories,
         "test_group": None,  # Will be set per cluster
         "reference_group": "rest",
-        "score_prefix": f"cluster_{target_clusters}"
+        "score_prefix": best_col
     }
 
 
-def _perform_single_de_comparison(adata, adata_subset, group_name, test_group, reference_group, score_prefix, strat_label, use_gpu):
+
+
+def _perform_single_de_comparison(adata, adata_subset, group_name, test_group, reference_group, score_prefix, split_label, use_gpu):
     """Helper function to perform a single DE comparison and scoring"""
     # Create comparison description for logging
     comparison_desc = f"{test_group} vs {reference_group}"
@@ -277,7 +347,7 @@ def _perform_single_de_comparison(adata, adata_subset, group_name, test_group, r
     de_genes = sc.get.rank_genes_groups_df(adata_subset_cpu, group=test_group, pval_cutoff=None)  # Get all results
     
     # Store DE results in main adata object
-    de_key = f"de_{score_prefix}_{test_group}_vs_{reference_group}_{strat_label}" if strat_label != "all" else f"de_{score_prefix}_{test_group}_vs_{reference_group}"
+    de_key = f"de_{score_prefix}_{test_group}_vs_{reference_group}_{split_label}" if split_label != "all_cells_scores" else f"de_{score_prefix}_{test_group}_vs_{reference_group}"
     if 'de_results' not in adata.uns:
         adata.uns['de_results'] = {}
     adata.uns['de_results'][de_key] = de_genes
@@ -336,11 +406,11 @@ def _perform_single_de_comparison(adata, adata_subset, group_name, test_group, r
         sc.tl.rank_genes_groups(adata_subset_cpu, group_name, groups=[test_group], reference=reference_group, method='t-test', use_raw=False)
 
     # Create score names based on comparison type
-    suffix = f"_{strat_label}" if strat_label != "all" else ""
+    suffix = f"_{split_label}" if split_label != "all_cells_scores" else ""
     if reference_group == "rest":
-        # Cluster vs rest naming: include cluster name
-        pos_score_name = f"{score_prefix}_{test_group}_pos{suffix}"
-        neg_score_name = f"{score_prefix}_{test_group}_neg{suffix}"
+        # Cluster vs rest naming: include cluster name with 'clust' prefix
+        pos_score_name = f"{score_prefix}_clust{test_group}_pos{suffix}"
+        neg_score_name = f"{score_prefix}_clust{test_group}_neg{suffix}"
     else:
         # Pairwise comparison naming: use generic "score" 
         pos_score_name = f"{score_prefix}_score_pos{suffix}"
@@ -369,15 +439,15 @@ def _perform_single_de_comparison(adata, adata_subset, group_name, test_group, r
     return created_scores
 
 
-def perform_de_and_scoring(adata, group_config, strat_samples, strat_label, use_gpu):
+def perform_de_and_scoring(adata, group_config, cell_mask, split_label, use_gpu):
     """Clean DE and scoring function - works for all strategies"""
     group_name = group_config["group_name"]
     test_group = group_config["test_group"]
     reference_group = group_config["reference_group"]
     score_prefix = group_config["score_prefix"]
 
-    # Subset to relevant samples (create copy to avoid view warnings)
-    adata_subset = adata[adata.obs["sample"].isin(strat_samples)].copy()
+    # Subset to relevant cells using mask (create copy to avoid view warnings)
+    adata_subset = adata[cell_mask].copy()
 
     # Determine comparison pairs
     if reference_group == "rest" and test_group is None:
@@ -397,7 +467,7 @@ def perform_de_and_scoring(adata, group_config, strat_samples, strat_label, use_
     for test, ref in comparisons:
         scores = _perform_single_de_comparison(
             adata, adata_subset, group_name, test, ref, 
-            score_prefix, strat_label, use_gpu
+            score_prefix, split_label, use_gpu
         )
         all_created_scores.extend(scores)
         log_print(f"    📋 DE comparison {test} vs {ref} created {len(scores)} scores: {scores}")
@@ -406,20 +476,23 @@ def perform_de_and_scoring(adata, group_config, strat_samples, strat_label, use_
     return all_created_scores
 
 
-def calculate_unified_scores(adata, scoring_config, use_gpu, cutoff, non_targeting_strings):
+def calculate_unified_scores(adata, scoring_config, use_gpu, cutoff, non_targeting_strings, de_analysis_subsets=None):
     """Simplified unified scoring system with strategy functions"""
     log_print("🚀 Starting simplified unified scoring system...")
 
     # Strategy function mapping
     strategy_functions = {
         "target_gene_strategy": target_gene_strategy,
-        "guide_strategy": guide_strategy,
-        "cluster_strategy": cluster_strategy
+        "cluster_strategy": cluster_strategy,
+        "filter_group_strategy": filter_group_strategy
     }
 
     created_categories = []
     created_scores = []
-    available_samples = list(adata.obs["sample"].unique())
+    
+    # Track DE subset structure for plotting
+    de_subset_structure = {}
+    de_subsets_found = set()
 
     # Process each configuration
     for config_name, config in scoring_config.items():
@@ -443,26 +516,40 @@ def calculate_unified_scores(adata, scoring_config, use_gpu, cutoff, non_targeti
             adata.obs[group_config["group_name"]] = group_config["categories"]
             created_categories.append(group_config["group_name"])
 
-            # Apply stratification
-            stratified_samples = apply_stratification(
-                adata, available_samples,
-                config.get("stratify_by"),
-                config.get("stratify_values", [])
+            # Apply DE splitting - returns cell masks for separate DE analyses
+            de_split_masks = apply_subset_filters(
+                adata,
+                de_analysis_subsets  # Use the parameter passed to main(), not from config
             )
 
-            # Perform DE and scoring for each stratification
-            for strat_label, samples in stratified_samples.items():
-                if not samples:
+            # Perform DE and scoring for each DE split
+            for split_label, cell_mask in de_split_masks.items():
+                if cell_mask.sum() == 0:  # No cells in this DE split
                     continue
 
-                scores = perform_de_and_scoring(adata, group_config, samples, strat_label, use_gpu)
+                scores = perform_de_and_scoring(adata, group_config, cell_mask, split_label, use_gpu)
                 log_print(f"    📋 perform_de_and_scoring returned {len(scores)} scores: {scores}")
                 if scores:
                     created_scores.extend(scores)
+                    
+                    # Track DE subset structure (only real subsets, not all_cells_scores)
+                    if split_label != "all_cells_scores":
+                        de_subsets_found.add(split_label)
+                        if split_label not in de_subset_structure:
+                            de_subset_structure[split_label] = []
+                        de_subset_structure[split_label].extend(scores)
 
     # Store for automatic UMAP registration
     adata.uns["unified_scoring_categories"] = created_categories
     adata.uns["unified_scoring_scores"] = created_scores
+    
+    # Store DE subset structure for plotting
+    if de_subsets_found:
+        adata.uns["de_subsets"] = sorted(list(de_subsets_found))
+        adata.uns["de_subset_scores"] = de_subset_structure
+        log_print(f"  📊 DE subsets found: {adata.uns['de_subsets']}")
+        for subset, scores in de_subset_structure.items():
+            log_print(f"    - {subset}: {len(scores)} scores")
 
     log_print(f"🎆 Simplified unified scoring complete!")
     log_print(f"  📊 Created {len(created_categories)} categories: {created_categories}")
@@ -471,101 +558,78 @@ def calculate_unified_scores(adata, scoring_config, use_gpu, cutoff, non_targeti
     return adata
 
 
-def save_umap_plots(adata, outdir):
-    """Save UMAP plots for visualization using clean unified system."""
-    umap_colors_candidate = [
-        # Basic metrics
-        "pct_counts_mt", "pct_counts_ribo", "rep", "library", "lib_for_batch",
-        "guide_umi_counts", "total_counts", "guides_per_cell", "n_guides_total",
-
-        # Gene expression scores
-        "G2M_score", "S_score"
-    ]
-
-    # AUTOMATIC REGISTRATION: Add all categories and scores created by unified scoring system
-    if "unified_scoring_categories" in adata.uns:
-        unified_categories = adata.uns["unified_scoring_categories"]
-        umap_colors_candidate.extend(unified_categories)
-        log_print(f"📊 Auto-registered {len(unified_categories)} unified categories: {unified_categories}")
-
-    if "unified_scoring_scores" in adata.uns:
-        unified_scores = adata.uns["unified_scoring_scores"]
-        umap_colors_candidate.extend(unified_scores)
-        log_print(f"📊 Auto-registered {len(unified_scores)} unified scores: {unified_scores}")
-
-    # Add leiden clustering results
-    leiden_cols = [col for col in adata.obs.columns if col.startswith('leiden_')]
-    umap_colors_candidate.extend(leiden_cols)
-
-    # Filter to only existing columns
-    umap_colors = [col for col in umap_colors_candidate if col in adata.obs.columns]
-
-    missing_cols = [col for col in umap_colors_candidate if col not in adata.obs.columns]
-
-    if missing_cols:
-        log_print(f"⚠️  WARNING: Missing columns for UMAP plotting: {missing_cols}")
-    log_print(f"🗺️ Plotting UMAP with available columns: {umap_colors}")
-
-    # Generate multi-page PDF with each UMAP on its own page
-    output_file = f"{outdir}/umap.final_analysis.pdf"
-
-    # Set scanpy settings for rasterized output (not vector)
-    sc.settings.set_figure_params(dpi_save=150, facecolor='white')
-
-    with PdfPages(output_file) as pdf:
-        for i, color in enumerate(umap_colors):
-            log_print(f"📊 Generating UMAP {i+1}/{len(umap_colors)}: {color}")
-
-            # Set figure size before scanpy creates the plot
-            plt.figure(figsize=(12, 8))
+def calculate_subset_umaps(adata_hvg, subset_configs, use_gpu, n_neighbors, n_pcs):
+    """Calculate UMAP embeddings for cell subsets using existing PCA coordinates.
+    
+    This function computes separate UMAP embeddings for defined cell subsets,
+    allowing focused visualization of specific cell populations. It reuses the
+    PCA coordinates from the full dataset but recalculates neighbors and UMAP
+    for each subset.
+    
+    Args:
+        adata_hvg: AnnData object with PCA coordinates in obsm['X_pca']
+        subset_configs: List of subset configurations with 'name' and 'filter'
+        use_gpu: Whether to use GPU acceleration
+    """
+    import numpy as np
+    
+    if not subset_configs:
+        log_print("ℹ️  No subset configurations provided for UMAP calculation")
+        return
+    
+    log_print(f"📊 Calculating UMAP embeddings for {len(subset_configs)} cell subsets...")
+    
+    # Import GPU libraries if needed
+    if use_gpu and GPU_AVAILABLE:
+        import rapids_singlecell as rsc
+    
+    # Use unified subset filter function with minimum cell requirement
+    subset_masks = apply_subset_filters(adata_hvg, subset_configs, min_cells=100)
+    
+    successful_subsets = []
+    
+    for subset_name, mask in subset_masks.items():
+        if subset_name == "all_cells_scores":
+            continue  # Skip all_cells_scores for UMAP subsets (it's for DE, not UMAP)
             
-            # Check if this is a target gene category column
-            is_target_gene_column = (color in adata.obs.columns and 
-                                   adata.obs[color].dtype.name == 'category' and
-                                   'target_genes' in adata.obs[color].cat.categories)
-            
-            if is_target_gene_column:
-                # For target gene columns, create a binary version for cleaner visualization
-                # Create temporary binary column: target_genes vs everything else
-                binary_col = f"{color}_binary"
-                adata.obs[binary_col] = adata.obs[color].map(
-                    lambda x: 'target_genes' if x == 'target_genes' else 'background'
-                ).astype('category')
-                
-                # Plot using scanpy with custom colors
-                sc.pl.umap(adata, color=binary_col, 
-                          palette={'background': 'lightgray', 'target_genes': 'red'},
-                          size=40, alpha=0.8, show=False, frameon=False)
-                
-                # Clean up temporary column
-                adata.obs.drop(columns=[binary_col], inplace=True)
-                
-                # Add title
-                plt.title(f'{color} (target_genes highlighted)')
-                    
-                target_count = (adata.obs[color] == 'target_genes').sum()
-                log_print(f"  Target_genes only plot: {target_count} cells highlighted on gray background")
-            else:
-                # Normal plotting for other columns
-                sc.pl.umap(adata, color=color, vmin="p5", vmax="p95",
-                          show=False, frameon=False)
+        n_cells = mask.sum()
+        
+        # Create subset
+        subset_adata = adata_hvg[mask].copy()
+        log_print(f"  🗺️  Computing UMAP for subset '{subset_name}': {n_cells:,} cells")
+        
+        # Recalculate neighbors and UMAP using existing PCA
+        # The PCA coordinates are already in obsm['X_pca']
+        if use_gpu and GPU_AVAILABLE:
+            rsc.pp.neighbors(subset_adata, n_neighbors=n_neighbors, n_pcs=n_pcs)
+            rsc.tl.umap(subset_adata)
+        else:
+            sc.pp.neighbors(subset_adata, n_neighbors=n_neighbors, n_pcs=n_pcs)
+            sc.tl.umap(subset_adata)
+        
+        # Store subset UMAP coordinates in main object
+        # Use NaN for cells not in subset to maintain array shape
+        umap_key = f'X_umap_{subset_name}'
+        adata_hvg.obsm[umap_key] = np.full((adata_hvg.n_obs, 2), np.nan)
+        adata_hvg.obsm[umap_key][mask] = subset_adata.obsm['X_umap']
+        
+        successful_subsets.append(subset_name)
+        log_print(f"    ✅ Successfully computed UMAP for '{subset_name}'")
+    
+    if successful_subsets:
+        log_print(f"✅ Successfully calculated {len(successful_subsets)} subset UMAPs: {successful_subsets}")
+        
+        # Store list of subset names in uns for downstream use
+        adata_hvg.uns['umap_subsets'] = successful_subsets
+    else:
+        log_print("⚠️  No subset UMAPs were successfully calculated")
 
-            # Get the current figure that scanpy created
-            fig = plt.gcf()
 
-            # Ensure points are rasterized (not vector) for smaller file size
-            for ax in fig.get_axes():
-                for child in ax.get_children():
-                    if hasattr(child, 'set_rasterized'):
-                        child.set_rasterized(True)
-
-            # Save page to PDF
-            pdf.savefig(fig, bbox_inches='tight', dpi=150)
-            plt.close(fig)  # Close figure to free memory
-
-    log_print(f"📄 Multi-page UMAP saved to: {output_file}")
-    log_print(f"📊 Generated {len(umap_colors)} UMAP pages")
-
+# UMAP plotting function moved to scripts/plot_standard_analyses_umap.py
+# This separation allows for:
+# - Independent plot regeneration without re-running analysis
+# - Dashboard-compatible individual PNG files instead of multi-page PDF
+# - Better memory management and parallelization
 
 
 def prepare_final_dataset(adata, final_output_file):
@@ -615,9 +679,10 @@ def prepare_final_dataset(adata, final_output_file):
 
 def main(cutoff, input_file, outdir, final_output_file, 
          use_gpu, target_clusters,
-         target_genes=None, stratification_column=None, 
-         stratification_values=None, non_targeting_strings=None,
-         gpu_threshold_gb=2.0, hvg_reference_file=None):
+         target_genes=None, de_analysis_subsets=None, 
+         non_targeting_strings=None,
+         gpu_threshold_gb=2.0, hvg_reference_file=None,
+         standard_analyses_config=None):
     """Main processing pipeline for unified data format.
 
     Parameters:
@@ -667,7 +732,9 @@ def main(cutoff, input_file, outdir, final_output_file,
 
         # Perform clustering on HVG dataset FIRST (before unified scoring)
         log_print("🎯 Performing clustering on HVG dataset...")
-        adata_hvg = perform_dimensionality_reduction(adata_hvg, use_gpu=gpu_enabled)
+        n_neighbors = standard_analyses_config['n_neighbors']
+        n_pcs = standard_analyses_config['n_pcs']
+        adata_hvg = perform_dimensionality_reduction(adata_hvg, use_gpu=gpu_enabled, n_neighbors=n_neighbors, n_pcs=n_pcs)
 
         # Clean GPU memory after dimensionality reduction
         if gpu_enabled:
@@ -679,14 +746,19 @@ def main(cutoff, input_file, outdir, final_output_file,
         if gpu_enabled:
             cleanup_gpu_memory()
 
+        # Calculate subset UMAPs if configured
+        # Use the same analysis_subsets for UMAP
+        if de_analysis_subsets:
+            calculate_subset_umaps(adata_hvg, de_analysis_subsets, use_gpu=gpu_enabled, n_neighbors=n_neighbors, n_pcs=n_pcs)
+
         # Use expressed dataset for DE and scoring (already available from normalize_and_preprocess)
 
-        # Transfer leiden clustering results from HVG to expressed dataset
-        log_print("🔄 Transferring leiden clustering results to expressed dataset...")
-        leiden_cols = [col for col in adata_hvg.obs.columns if col.startswith('leiden_')]
-        for col in leiden_cols:
+        # Transfer clustering results from HVG to expressed dataset
+        log_print("🔄 Transferring clustering results to expressed dataset...")
+        cluster_cols = [col for col in adata_hvg.obs.columns if col.startswith('clusters') and '_res' in col]
+        for col in cluster_cols:
             adata_expressed.obs[col] = adata_hvg.obs[col]
-        log_print(f"📊 Transferred {len(leiden_cols)} leiden clustering results: {leiden_cols}")
+        log_print(f"📊 Transferred {len(cluster_cols)} clustering results: {cluster_cols}")
 
         # Delete layers from expressed dataset (not needed for DE/scoring)
         if adata_expressed.layers:
@@ -739,15 +811,18 @@ def main(cutoff, input_file, outdir, final_output_file,
             scoring_config["target_genes"] = {
                 "groups": groups,
                 "strategy": "target_gene_strategy",
-                "stratify_by": stratification_column if stratification_column else None,
-                "stratify_values": stratification_values if stratification_values else []
+                "de_analysis_subsets": de_analysis_subsets if de_analysis_subsets else []
             }
         
-        # Always include guide MOI analysis
-        scoring_config["guide_moi"] = {
-            "groups": ["guide_category"],
-            "strategy": "guide_strategy"
-        }
+        # Add configured scoring groups from config
+        scoring_groups = standard_analyses_config.get('scoring_groups', {})
+        for group_name, group_list in scoring_groups.items():
+            scoring_config[group_name] = {
+                "groups": [group_list],  # Wrap in list for compatibility with existing code
+                "strategy": "filter_group_strategy"
+            }
+            # First is reference, second is test
+            log_print(f"✅ Added scoring group '{group_name}': {group_list[1]['name']} vs {group_list[0]['name']}")
         
         # Use target_clusters to determine range of clusters to test
         # Test from 2 up to target_clusters + 1
@@ -769,7 +844,7 @@ def main(cutoff, input_file, outdir, final_output_file,
         # Run unified scoring system
         # Use empty list if non_targeting_strings is None
         nt_strings = non_targeting_strings if non_targeting_strings else []
-        adata_expressed = calculate_unified_scores(adata_expressed, scoring_config, use_gpu=gpu_enabled, cutoff=cutoff, non_targeting_strings=nt_strings)
+        adata_expressed = calculate_unified_scores(adata_expressed, scoring_config, use_gpu=gpu_enabled, cutoff=cutoff, non_targeting_strings=nt_strings, de_analysis_subsets=de_analysis_subsets)
 
         # Clean GPU memory after unified scoring
         if gpu_enabled:
@@ -851,8 +926,8 @@ def main(cutoff, input_file, outdir, final_output_file,
                 del adata_hvg.layers[layer]
             log_print("🧹 Deleted layers from HVG dataset")
 
-        # Skip UMAP plotting in main pipeline - will be done separately
-        log_print("🎨 Skipping UMAP plots in main pipeline - use plot_umap rule or --plot-only for visualization")
+        # UMAP plotting moved to separate rule for dashboard integration
+        log_print("🎨 UMAP plotting will be done by plot_standard_analyses_umap rule for dashboard integration")
 
         log_print(f"📊 Transfer summary - obs: {obs_transferred} transferred, {obs_skipped} skipped")
         log_print(f"📊 Transfer summary - obsm: {obsm_transferred} transferred, {obsm_skipped} skipped") 
@@ -876,50 +951,42 @@ def main(cutoff, input_file, outdir, final_output_file,
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Preprocess perturbation data for training')
-    parser.add_argument('--cutoff', type=int, default=5,
-                        help='Threshold for guide assignment (default: 5)')
-    parser.add_argument('--target-genes', nargs='+',
-                        help='Target genes to analyze')
+    parser.add_argument('--config-file', required=True,
+                        help='Configuration YAML file')
     parser.add_argument('--input-file', required=True,
                         help='Input combined h5ad file from combine_sublibraries')
     parser.add_argument('--outdir', required=True,
                         help='Output directory for plots and results')
     parser.add_argument('--final-output-file', required=True,
                         help='Path for final h5ad output ready for training')
-    parser.add_argument('--force', action='store_true',
-                        help='Force regeneration of output files even if they exist')
-    parser.add_argument('--use-gpu', action='store_true',
-                        help='Use GPU acceleration for computations (requires RAPIDS)')
-    parser.add_argument('--gpu-threshold-gb', type=float, default=2.0,
-                        help='Maximum used GPU memory allowed in GB (default: 2.0)')
-    parser.add_argument('--hvg-reference-file', default=None,
-                        help='Reference h5ad file to compute HVGs from (e.g., adata_all.annot.ultima.filt.h5ad)')
-    parser.add_argument('--target-clusters', type=int, default=3,
-                        help='Target number of leiden clusters to identify (default: 3)')
-    parser.add_argument('--stratification-column',
-                        help='Column for stratification analysis')
-    parser.add_argument('--stratification-values', nargs='+',
-                        help='Values for stratification analysis')
-    parser.add_argument('--non-targeting-strings', nargs='+',
-                        help='Strings to identify non-targeting guides')
     args = parser.parse_args()
+    
+    # Load configuration file
+    import yaml
+    with open(args.config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Extract relevant config sections
+    standard_analyses_config = config.get('standard_analyses', {})
+    # Use unified analysis_subsets for both DE and UMAP
+    analysis_subsets = standard_analyses_config.get('analysis_subsets', [])
 
     # Note: Snakemake handles dependency tracking, so we always regenerate when called
     if os.path.exists(args.final_output_file):
         log_print(f"🔄 Final output file {args.final_output_file} exists - regenerating as requested by Snakemake...")
 
-    # Run the pipeline
+    # Run the pipeline - get all parameters from config
     adata_final = main(
-        cutoff=args.cutoff,
+        cutoff=standard_analyses_config.get('guide_assignment_cutoff', 5),
         input_file=args.input_file,
         outdir=args.outdir,
         final_output_file=args.final_output_file,
-        use_gpu=args.use_gpu,
-        target_clusters=args.target_clusters,
-        target_genes=args.target_genes,
-        stratification_column=args.stratification_column,
-        stratification_values=args.stratification_values,
-        non_targeting_strings=args.non_targeting_strings,
-        gpu_threshold_gb=args.gpu_threshold_gb,
-        hvg_reference_file=args.hvg_reference_file
+        use_gpu=standard_analyses_config.get('use_gpu', False),
+        target_clusters=standard_analyses_config.get('target_clusters', 3),
+        target_genes=standard_analyses_config.get('target_genes', []),
+        de_analysis_subsets=analysis_subsets,
+        non_targeting_strings=standard_analyses_config.get('non_targeting_strings', []),
+        gpu_threshold_gb=2.0,
+        hvg_reference_file=None,
+        standard_analyses_config=standard_analyses_config
     )

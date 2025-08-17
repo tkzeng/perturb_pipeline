@@ -83,7 +83,7 @@ def create_horizontal_point_plot(df, metric_col, stratify_by, log_scale=False, s
     
     # For cell-based metrics, show which method's cells are used
     if show_context and metric_col.startswith('n_cells_'):
-        # Extract method from column name (e.g., n_cells_EmptyDrops_FDR001)
+        # Extract method from column name (e.g., n_cells_BarcodeRanks_Knee)
         method = metric_col.replace('n_cells_', '')
         title += f'\nMethod: {method}'
     

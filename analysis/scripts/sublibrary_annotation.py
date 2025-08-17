@@ -49,18 +49,17 @@ from pipeline_utils import (
 # Removed get_expected_cells_from_sample_info - now extracted inline with other sample info
 
 
-def filter_and_prepare_gex(adata, sample_id, expected_cells, no_filter=False, min_umi_filter=2):
-    """Filter GEX data to top 3x expected cells + random 5x background.
+def filter_and_prepare_gex(adata, sample_id, expected_cells, min_umi_filter=2):
+    """Prepare GEX data for cell calling analysis.
     
     Args:
         adata: Unfiltered AnnData object
         sample_id: Sample identifier
         expected_cells: Expected number of cells
-        no_filter: If True, skip filtering and return all barcodes
-        min_umi_filter: Minimum UMI count to keep a barcode (applied even if no_filter=True)
+        min_umi_filter: Minimum UMI count to keep a barcode
         
     Returns:
-        Filtered (or unfiltered) AnnData object
+        Prepared AnnData object
     """
     # Sum layers to get total counts
     adata.X = adata.layers['mature'] + adata.layers['nascent'] + adata.layers['ambiguous']
@@ -79,44 +78,13 @@ def filter_and_prepare_gex(adata, sample_id, expected_cells, no_filter=False, mi
         total_counts = total_counts[keep_mask]
         log_print(f"   Kept {adata.n_obs:,} barcodes with >= {min_umi_filter} UMIs")
     
-    if no_filter:
-        log_print(f"📊 Preparing GEX sample {sample_id} (NO FILTERING)")
-        log_print(f"   Keeping all {adata.n_obs:,} barcodes")
-        return adata
-    
-    # Original filtering code
-    n_top = 3 * expected_cells  # High-quality cells for analysis
-    n_random_low = max(100000, 5 * expected_cells)  # Background droplets for EmptyDrops
-    
-    log_print(f"📊 Filtering GEX sample {sample_id}")
+    # Keep all cells for cell calling analysis
+    log_print(f"📊 Preparing GEX sample {sample_id}")
     log_print(f"   Expected cells: {expected_cells}")
-    log_print(f"   Keeping top {n_top} cells + random {n_random_low} low-UMI barcodes")
+    log_print(f"   Keeping all {adata.n_obs:,} cells for cell calling analysis")
     
-    # Sort by UMI counts (total_counts already calculated above)
-    sorted_indices = np.argsort(total_counts)[::-1]  # High to low
-    
-    # Get top cells by UMI count
-    n_top_actual = min(n_top, adata.n_obs)
-    top_indices = sorted_indices[:n_top_actual]
-    
-    # Get random sample from all remaining barcodes
-    remaining_indices = sorted_indices[n_top_actual:]
-    
-    n_random_actual = min(n_random_low, len(remaining_indices))
-    if n_random_actual > 0:
-        np.random.seed(42)  # For reproducibility
-        random_low_indices = np.random.choice(remaining_indices, size=n_random_actual, replace=False)
-    else:
-        random_low_indices = np.array([], dtype=int)
-    
-    # Combine indices
-    combined_indices = np.concatenate([top_indices, random_low_indices])
-    
-    log_print(f"   Selected {len(top_indices)} top cells + {len(random_low_indices)} random remaining cells")
-    log_print(f"   Total: {len(combined_indices)} cells ({len(combined_indices)/adata.n_obs:.1%} of original)")
-    
-    # Filter adata
-    adata_filtered = adata[combined_indices, :].copy()
+    # Return all data - cell calling will determine actual cells
+    adata_filtered = adata.copy()
     
     # Clean up original adata
     del adata
@@ -125,33 +93,28 @@ def filter_and_prepare_gex(adata, sample_id, expected_cells, no_filter=False, mi
     return adata_filtered
 
 
-def filter_and_prepare_guide(adata, sample_id, gex_barcodes, no_filter=False):
-    """Filter guide data to match GEX cell barcodes.
+def filter_and_prepare_guide(adata, sample_id, gex_barcodes):
+    """Prepare guide data to match GEX cell barcodes.
     
     Args:
         adata: Unfiltered guide AnnData object
         sample_id: Sample identifier
         gex_barcodes: List of cell barcodes from paired GEX sample
-        no_filter: If True, return all barcodes (but still need to align with GEX)
         
     Returns:
-        Filtered AnnData object
+        Prepared AnnData object
     """
-    if no_filter:
-        log_print(f"📊 Preparing guide sample {sample_id} (NO FILTERING)")
-        log_print(f"   Total guide barcodes: {adata.n_obs:,}")
-    else:
-        log_print(f"📊 Filtering guide sample {sample_id}")
+    log_print(f"📊 Preparing guide sample {sample_id}")
     
     log_print(f"   Using {len(gex_barcodes)} barcodes from paired GEX")
     
-    # Filter to cells present in GEX sample
+    # Align to cells present in GEX sample
     common_barcodes = [bc for bc in gex_barcodes if bc in adata.obs.index]
     log_print(f"   Found {len(common_barcodes)} common barcodes between GEX and guide")
     
-    # Filter adata
+    # Prepare adata
     adata_filtered = adata[common_barcodes, :].copy()
-    log_print(f"   Filtered: {adata_filtered.shape[0]} cells x {adata_filtered.shape[1]} guides")
+    log_print(f"   Prepared: {adata_filtered.shape[0]} cells x {adata_filtered.shape[1]} guides")
     
     # Clean up original adata
     del adata
@@ -318,8 +281,6 @@ def main():
                         help="Sample ID (GEX sample ID in format pool:sample)")
     parser.add_argument("--guide-sample-id", required=True,
                         help="Guide sample ID")
-    parser.add_argument("--skip-filtering", action="store_true",
-                        help="Skip barcode filtering, keep all barcodes (recommended for cell calling)")
     parser.add_argument("--source", required=True, choices=["main", "undetermined", "all"],
                         help="Data source (main, undetermined, or all)")
     parser.add_argument("--processing", required=True, choices=["raw", "trimmed", "recovered", "merged"],
@@ -394,8 +355,8 @@ def main():
     
     # Run the pipeline
     try:
-        # 1. LOAD AND FILTER GEX DATA
-        log_print("\n📥 1. LOADING AND FILTERING GEX DATA...")
+        # 1. LOAD AND PREPARE GEX DATA
+        log_print("\n📥 1. LOADING AND PREPARING GEX DATA...")
         gex_h5ad_path = Path(args.gex_kb_dir) / "counts_unfiltered" / "adata.h5ad"
         log_print(f"   Loading from: {gex_h5ad_path}")
         
@@ -403,12 +364,12 @@ def main():
         log_print(f"   Loaded {adata_gex.shape[0]} cells x {adata_gex.shape[1]} genes")
         log_print(f"   GEX layers sparsity - mature: {scipy.sparse.issparse(adata_gex.layers['mature'])}, nascent: {scipy.sparse.issparse(adata_gex.layers['nascent'])}, ambiguous: {scipy.sparse.issparse(adata_gex.layers['ambiguous'])}")
         
-        # Filter using the expected cells we extracted above
-        adata_gex = filter_and_prepare_gex(adata_gex, args.sample_id, expected_cells, args.skip_filtering, min_umi_filter)
-        gc.collect()  # Clean up after filtering
+        # Prepare using the expected cells we extracted above
+        adata_gex = filter_and_prepare_gex(adata_gex, args.sample_id, expected_cells, min_umi_filter)
+        gc.collect()  # Clean up after preparation
         
-        # 2. LOAD AND FILTER GUIDE DATA
-        log_print("\n📥 2. LOADING AND FILTERING GUIDE DATA...")
+        # 2. LOAD AND PREPARE GUIDE DATA
+        log_print("\n📥 2. LOADING AND PREPARING GUIDE DATA...")
         guide_h5ad_path = Path(args.guide_kb_dir) / "counts_unfiltered" / "adata.h5ad"
         log_print(f"   Loading from: {guide_h5ad_path}")
         
@@ -416,9 +377,9 @@ def main():
         log_print(f"   Loaded {adata_guide.shape[0]} cells x {adata_guide.shape[1]} guides")
         log_print(f"   Guide X sparsity: {scipy.sparse.issparse(adata_guide.X)}, type: {type(adata_guide.X)}")
         
-        # Filter guide to match GEX barcodes
-        adata_guide = filter_and_prepare_guide(adata_guide, args.guide_sample_id, adata_gex.obs.index.tolist(), args.skip_filtering)
-        gc.collect()  # Clean up after filtering
+        # Prepare guide to match GEX barcodes
+        adata_guide = filter_and_prepare_guide(adata_guide, args.guide_sample_id, adata_gex.obs.index.tolist())
+        gc.collect()  # Clean up after preparation
         
         # 3. COMBINE GEX AND GUIDE DATA
         log_print("\n🔗 3. COMBINING GEX AND GUIDE DATA...")

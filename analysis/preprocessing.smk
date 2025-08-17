@@ -1,10 +1,15 @@
+# PREPROCESSING PIPELINE
+# ======================
+# This pipeline handles initial data processing, QC, and cell calling.
+# 
 # NOTE: This pipeline should be run from the 'kb' conda environment
 # All tools (kallisto-bustools, fastqc, python packages) are available in this environment
 #
-# SUBLIBRARY COMBINATION: The rules for combining sublibraries across pools
-# have been moved to Snakefile_sublibrary_combination for better organization.
-# To run sublibrary combination:
-#   snakemake -s Snakefile_sublibrary_combination all_combined --configfile config.yaml
+# To run:
+#   snakemake -s preprocessing.smk --configfile config.yaml
+#
+# For downstream analysis (UMAP, clustering, DE), use:
+#   snakemake -s downstream.smk --configfile config.yaml
 
 # Config file must be specified via --configfile when running snakemake
 
@@ -546,7 +551,6 @@ rule filter_and_annotate_sublibrary:
         gex_sample_id="{gex_sample_id}",  # Full sample_id for lookups
         guide_sample_id=lambda wildcards: gex_to_guide[wildcards.gex_sample_id],  # Full sample_id for lookups
         guide_cutoff=config['sublibrary_filtering']['guide_assignment_cutoff'],
-        skip_filtering=config['sublibrary_filtering']['skip_barcode_filtering'],
         # Directory paths for the script
         gex_kb_dir=f"{SCRATCH}/{{gex_sample_id}}/kb_all_{{source}}_{{processing}}",
         guide_kb_dir=lambda wildcards: f"{SCRATCH}/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}"
@@ -565,11 +569,6 @@ rule filter_and_annotate_sublibrary:
             --guide-sample-id {params.guide_sample_id} \
             --source {wildcards.source} \
             --processing {wildcards.processing}"
-        
-        # Add skip-filtering flag if configured
-        if [ "{params.skip_filtering}" = "True" ]; then
-            CMD="$CMD --skip-filtering"
-        fi
         
         # Execute
         $CMD &> {log}
@@ -637,8 +636,7 @@ rule cell_calling_analysis:
         # Directory containing all cell calling outputs
         cell_calling_dir=directory(f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling"),
         # Key summary files for downstream use
-        summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv",
-        cell_calling_summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/cell_calling_summary.tsv"
+        summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv"
     log:
         f"{LOGS}/cell_calling_{{sample_id}}_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -651,7 +649,7 @@ rule cell_calling_analysis:
     threads:
         config["resources"]["analysis"]["threads"]
     resources:
-        mem_mb=config["resources"]["analysis"]["mem_mb"],  # For large matrices with EmptyDrops
+        mem_mb=config["resources"]["analysis"]["mem_mb"],
     shell:
         """
         # ml R/4.4  # R is now installed in the kb conda environment via bioconda::bioconductor-dropletutils
@@ -710,9 +708,12 @@ rule generate_qc_cell_lists:
     """
     input:
         h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
+        # Add cell calling results as dependency
+        cell_barcodes=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/{{sample_id}}_{config['cell_calling']['default_method']}_cell_barcodes.txt",
         script="scripts/generate_qc_cell_lists.py"
     output:
-        qc_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv"
+        qc_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv",
+        debug_plot_dir=directory(f"{RESULTS}/qc_report/plots/gmm_qc/{{source}}_{{processing}}/{{sample_id}}")
     params:
         config_file=workflow.configfiles[0]
     log:
@@ -725,7 +726,9 @@ rule generate_qc_cell_lists:
         """
         python {input.script} \
             --h5ad {input.h5ad} \
+            --cell-barcodes {input.cell_barcodes} \
             --output {output.qc_lists} \
+            --plot-output {output.debug_plot_dir}/plot.png \
             --config {params.config_file} &> {log}
         """
 
@@ -1038,7 +1041,7 @@ rule process_pool_metrics:
 rule generate_qc_report:
     """Package QC outputs for laptop viewing with Streamlit dashboard"""
     input:
-        # Get all QC report files from the categorized outputs
+        # Get all QC report files from the categorized outputs (basic QC only)
         files=lambda wildcards: [f for category in ['read_stats', 'cell_calling',
                                              'qc_metrics', 'saturation',
                                              'consolidated']
@@ -1065,7 +1068,7 @@ rule generate_qc_report:
             --input-file-list $TMPFILE \
             --sample-info {input.sample_info} \
             --dashboard-script {input.dashboard_script} \
-            --output-archive {RESULTS}/qc_dashboard_{params.timestamp}.tar.gz \
+            --output-archive {RESULTS}/qc_dashboard_preprocessing_{params.timestamp}.tar.gz \
             --per-cell-method-filter {config[cell_calling][default_method]} \
             --guide-cutoff-filter 1,2 \
             --threads {threads} &> {log}

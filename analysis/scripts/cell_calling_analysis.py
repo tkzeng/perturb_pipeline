@@ -3,7 +3,7 @@
 Cell calling analysis using multiple approaches:
 1. Expected cell count (top N barcodes)
 2. Simple UMI threshold
-3. EmptyDrops (via R script)
+3. BarcodeRanks (via R script)
 
 This script performs cell calling analysis and saves results.
 Plotting is handled separately by cell_calling_plots.py.
@@ -41,37 +41,23 @@ def load_h5ad_matrix(h5ad_file):
     
     return adata
 
-def run_dropletutils_r(kb_dir, sample_id, output_dir, emptydrops_lower=100, ncores=1, expected_cells=0, 
-                      run_emptydrops=False, run_barcoderanks=False, fdr_cutoffs=None):
-    """Run R script for DropletUtils analysis (EmptyDrops and/or BarcodeRanks).
-    
-    NOTE: EmptyDrops is DEPRECATED. Use BarcodeRanks methods instead.
-    EmptyDrops code is preserved for backwards compatibility but is not actively maintained.
-    """
+def run_dropletutils_r(kb_dir, sample_id, output_dir, expected_cells=0, lower=100):
+    """Run R script for DropletUtils BarcodeRanks analysis."""
     # Get the path to the R script relative to this Python script
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    r_script_path = os.path.join(script_dir, "dropletutils_r.R")
+    r_script_path = os.path.join(script_dir, "dropletutils_r_minimal.R")
     
     cmd = [
-        "Rscript", "--vanilla", r_script_path,  # Use --vanilla to ensure only conda R packages are used
+        "Rscript", "--vanilla", r_script_path,
         "--kb_dir", str(kb_dir),
         "--sample_id", sample_id,
         "--output_dir", str(output_dir),
-        "--emptydrops_lower", str(emptydrops_lower),
-        "--ncores", str(ncores),
-        "--expected_cells", str(expected_cells)
+        "--expected_cells", str(expected_cells),
+        "--lower", str(lower)
     ]
     
-    if run_emptydrops:
-        cmd.append("--run_emptydrops")
-        if fdr_cutoffs:
-            # Pass FDR cutoffs as comma-separated string
-            cmd.extend(["--fdr_cutoffs", ",".join(map(str, fdr_cutoffs))])
-    if run_barcoderanks:
-        cmd.append("--run_barcoderanks")
-    
     result = subprocess.run(cmd, check=True)
-    print(f"DropletUtils R script completed successfully")
+    print(f"BarcodeRanks R script completed successfully")
 
 def expected_cell_method(adata, expected_cells):
     """Cell calling using expected cell count - take top N barcodes."""
@@ -103,69 +89,34 @@ def threshold_method(adata, min_umi_threshold):
     return is_cell, min_umi_threshold
 
 def load_dropletutils_results(output_dir, sample_id, adata):
-    """Load DropletUtils results from R script output (EmptyDrops + barcodeRanks)."""
-    # Load DropletUtils results
-    results_file = Path(output_dir) / "dropletutils_results.tsv"
+    """Load BarcodeRanks results from minimal R script output."""
+    # Load BarcodeRanks results
+    results_file = Path(output_dir) / f"{sample_id}_barcoderanks.tsv"
     df = pd.read_csv(results_file, sep='\t')
     
     # Map back to adata
     barcode_to_idx = {bc: i for i, bc in enumerate(adata.obs_names)}
     
-    # Load results for all methods
     results = {}
     
-    # 1. Load EmptyDrops results from summary file to get actual FDR thresholds tested
-    summary_file = Path(output_dir) / "cell_calling_summary.tsv"
-    if summary_file.exists():
-        summary_df = pd.read_csv(summary_file, sep='\t')
-        
-        # Process EmptyDrops results for each FDR threshold
-        emptydrops_rows = summary_df[summary_df['method'].str.startswith('EmptyDrops_FDR')]
-        for _, row in emptydrops_rows.iterrows():
-            method_name = row['method']
-            fdr_threshold = row['fdr_threshold']
-            
-            is_cell = np.zeros(adata.n_obs, dtype=bool)
-            
-            # Get cells below FDR threshold
-            cells_df = df[df['fdr'] <= fdr_threshold]
-            for barcode in cells_df['barcode']:
-                if barcode in barcode_to_idx:
-                    is_cell[barcode_to_idx[barcode]] = True
-            
-            results[method_name] = (is_cell, fdr_threshold)
+    # Get knee and inflection thresholds from the results file
+    knee_threshold = df['knee_threshold'].iloc[0]
+    inflection_threshold = df['inflection_threshold'].iloc[0]
     
-    # 2. BarcodeRanks knee and inflection points
-    # The R script saves a summary file with these values
-    summary_file = Path(output_dir) / "cell_calling_summary.tsv"
-    if summary_file.exists():
-        summary_df = pd.read_csv(summary_file, sep='\t')
-        
-        # Get knee and inflection thresholds
-        knee_row = summary_df[summary_df['method'] == 'BarcodeRanks_Knee']
-        inflection_row = summary_df[summary_df['method'] == 'BarcodeRanks_Inflection']
-        
-        if not knee_row.empty:
-            knee_threshold = knee_row.iloc[0]['threshold_used']
-            # Get cells above knee threshold
-            if 'total_counts' in adata.obs.columns:
-                total_counts = adata.obs['total_counts'].values
-            else:
-                total_counts = np.array(adata.X.sum(axis=1)).flatten()
-            
-            is_cell_knee = total_counts >= knee_threshold
-            results['BarcodeRanks_Knee'] = (is_cell_knee, knee_threshold)
-        
-        if not inflection_row.empty:
-            inflection_threshold = inflection_row.iloc[0]['threshold_used']
-            # Get cells above inflection threshold
-            if 'total_counts' in adata.obs.columns:
-                total_counts = adata.obs['total_counts'].values
-            else:
-                total_counts = np.array(adata.X.sum(axis=1)).flatten()
-            
-            is_cell_inflection = total_counts >= inflection_threshold
-            results['BarcodeRanks_Inflection'] = (is_cell_inflection, inflection_threshold)
+    # Create boolean arrays for cell calling
+    is_cell_knee = np.zeros(adata.n_obs, dtype=bool)
+    is_cell_inflection = np.zeros(adata.n_obs, dtype=bool)
+    
+    # Map barcode results back to adata indices
+    for _, row in df.iterrows():
+        barcode = row['barcode']
+        if barcode in barcode_to_idx:
+            idx = barcode_to_idx[barcode]
+            is_cell_knee[idx] = row['is_cell_knee']
+            is_cell_inflection[idx] = row['is_cell_inflection']
+    
+    results['BarcodeRanks_Knee'] = (is_cell_knee, knee_threshold)
+    results['BarcodeRanks_Inflection'] = (is_cell_inflection, inflection_threshold)
     
     return results
 
@@ -214,7 +165,6 @@ def get_cell_calling_params(config, sample_id):
     else:
         params['min_umi_threshold'] = defaults.get('min_umi_threshold', 100)
     
-    params['emptydrops_lower'] = defaults.get('emptydrops_lower', 100)
     
     return params
 
@@ -263,36 +213,17 @@ def main():
         print(f"Running threshold method (min_umi={params['min_umi_threshold']})...")
         methods_results['UMI_Threshold'] = threshold_method(adata, params['min_umi_threshold'])
     
-    # Method 3-7: DropletUtils methods (via R)
-    # Parse EmptyDrops methods and their FDR cutoffs
-    emptydrops_fdr_cutoffs = []
-    for method in methods_to_run:
-        if method.startswith('EmptyDrops_FDR_'):
-            # Parse FDR value from method name (e.g., EmptyDrops_FDR_0.001 -> 0.001)
-            fdr_str = method.replace('EmptyDrops_FDR_', '')
-            fdr_value = float(fdr_str)
-            emptydrops_fdr_cutoffs.append(fdr_value)
-    
+    # Method 3-4: BarcodeRanks methods (via R)
     barcoderanks_methods = ['BarcodeRanks_Knee', 'BarcodeRanks_Inflection']
-    
-    run_emptydrops = len(emptydrops_fdr_cutoffs) > 0
     run_barcoderanks = any(method in methods_to_run for method in barcoderanks_methods)
     
-    if run_emptydrops or run_barcoderanks:
-        print("Running DropletUtils analysis on pre-filtered matrix...")
-        if run_emptydrops:
-            print(f"  - EmptyDrops enabled with FDR cutoffs: {emptydrops_fdr_cutoffs}")
-            print("  WARNING: EmptyDrops is DEPRECATED. Use BarcodeRanks methods instead.")
-        if run_barcoderanks:
-            print("  - BarcodeRanks enabled")
+    if run_barcoderanks:
+        print("Running BarcodeRanks analysis on pre-filtered matrix...")
+        print("  - BarcodeRanks enabled")
             
         run_dropletutils_r(args.kb_dir, args.sample_id, output_dir, 
-                          params['emptydrops_lower'], 
-                          args.ncores,
-                          params['expected_cells'],
-                          run_emptydrops=run_emptydrops,
-                          run_barcoderanks=run_barcoderanks,
-                          fdr_cutoffs=emptydrops_fdr_cutoffs if run_emptydrops else None)
+                          params['expected_cells'], 
+                          100)  # lower threshold for BarcodeRanks
         
         dropletutils_results = load_dropletutils_results(output_dir, args.sample_id, adata)
         # Only include methods that were requested

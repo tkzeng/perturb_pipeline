@@ -2,12 +2,16 @@
 # DOWNSTREAM ANALYSIS PIPELINE
 # =============================================================================
 # This file contains rules for downstream analysis after initial processing
-# including sublibrary combination and perturbation preprocessing
+# including sublibrary combination, standard analyses, and UMAP generation
 #
-# To run: snakemake -s downstream.smk all_preprocessed --configfile config.yaml
+# Prerequisites: Run preprocessing.smk first to generate QC metrics and cell calling
+#
+# To run: snakemake -s downstream.smk --configfile config.yaml
 
 import os
 import sys
+from datetime import datetime
+from pathlib import Path
 from scripts.pipeline_utils import get_guide_gex_pairings
 from scripts.snakemake_helpers import (
     # Path helper functions
@@ -40,11 +44,16 @@ def load_sample_info_wrapper():
     return load_sample_info(config)
 
 rule all:
-    """Target rule for downstream analysis pipeline"""
+    """Target rule for downstream analysis pipeline with complete report generation"""
     input:
         # All preprocessed files based on configuration
-        [f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{source}_{processing}.h5ad"
-         for source, processing in config['combinations']]
+        preprocessed_files=[f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{source}_{processing}.h5ad"
+                           for source, processing in config['combinations']],
+        # UMAP plots for each preprocessed file
+        umap_plots=[f"{RESULTS}/qc_report/plots/umap/{source}_{processing}.complete"
+                   for source, processing in config['combinations']],
+        # Final complete report with all analyses
+        final_report=f"{RESULTS}/qc_report/COMPLETE_REPORT_DONE.txt"
 
 
 # =============================================================================
@@ -81,8 +90,7 @@ rule combine_sublibraries:
     output:
         combined=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/combined_{{source}}_{{processing}}.h5ad"
     params:
-        cell_calling_method=config['combined_sublibraries']['cell_calling_method'],
-        qc_method=config['combined_sublibraries']['qc_method']
+        cell_calling_method=config['combined_sublibraries']['cell_calling_method']
     log:
         f"{LOGS}/combine_sublibraries_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -99,7 +107,6 @@ rule combine_sublibraries:
             --filter-files {input.filter_files} \
             --cell-calling-method {params.cell_calling_method} \
             --output {output.combined} \
-            --qc-method {params.qc_method} \
             &> {log}
         """
 
@@ -122,14 +129,8 @@ rule standard_analyses:
     output:
         preprocessed=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{{source}}_{{processing}}.h5ad"
     params:
-        target_genes=" ".join(config["standard_analyses"]["target_genes"]),
-        use_gpu=config["standard_analyses"]["use_gpu"],
-        target_clusters=config["standard_analyses"]["target_clusters"],
-        guide_cutoff=config["standard_analyses"]["guide_assignment_cutoff"],
-        stratification_column=config["standard_analyses"]["de_analysis_subsets"]["column"],
-        stratification_values=" ".join(config["standard_analyses"]["de_analysis_subsets"]["values"]),
-        non_targeting_strings=" ".join(config["standard_analyses"]["non_targeting_strings"]),
-        outdir=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/standard_analyses_{{source}}_{{processing}}"
+        outdir=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/standard_analyses_{{source}}_{{processing}}",
+        config_file=workflow.configfiles[0]
     wildcard_constraints:
         source="main|undetermined|all",
         processing="raw|recovered|merged"
@@ -142,35 +143,102 @@ rule standard_analyses:
         """
         mkdir -p {params.outdir}
         
-        # Build command
-        CMD="python {input.script} \
+        python {input.script} \
+            --config-file {params.config_file} \
             --input-file {input.combined} \
             --outdir {params.outdir} \
             --final-output-file {output.preprocessed} \
-            --target-clusters {params.target_clusters} \
-            --cutoff {params.guide_cutoff}"
+            &> {log}
+        """
+
+
+rule plot_standard_analyses_umap:
+    """Generate UMAP plots from preprocessed standard_analyses output.
+    
+    Creates individual PNG files for dashboard integration with visualizations colored by:
+    - QC metrics (mt%, ribo%, total counts, etc.)
+    - Cell cycle scores
+    - Target gene categories and DE scores
+    - Guide MOI categories
+    - Leiden clustering results
+    """
+    input:
+        preprocessed=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{{source}}_{{processing}}.h5ad",
+        script="scripts/plot_standard_analyses_umap.py"
+    output:
+        plot_dir=directory(f"{RESULTS}/qc_report/plots/umap/{{source}}_{{processing}}"),
+        complete=f"{RESULTS}/qc_report/plots/umap/{{source}}_{{processing}}.complete"
+    params:
+        outdir=f"{RESULTS}/qc_report/plots/umap/{{source}}_{{processing}}"
+    wildcard_constraints:
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    log:
+        f"{LOGS}/plot_standard_analyses_umap_{{source}}_{{processing}}.log"
+    threads: 1
+    resources:
+        mem_mb=16000  # 16GB for plotting
+    shell:
+        """
+        python {input.script} \
+            --input-file {input.preprocessed} \
+            --output-dir {params.outdir} &> {log}
+        """
+
+
+# =============================================================================
+# FINAL REPORT GENERATION
+# =============================================================================
+rule generate_final_report:
+    """Package UMAP plots from downstream analyses for laptop viewing with Streamlit dashboard
+    
+    This generates a dashboard specifically for downstream analysis outputs:
+    - UMAP visualizations from standard analyses
+    - Clustering results
+    - Differential expression scores
+    
+    Note: QC metrics are packaged separately by preprocessing.smk
+    Run this after all downstream analyses are complete.
+    """
+    input:
+        # Get all UMAP plots including subsets from get_all_outputs
+        files=lambda wildcards: [f for category in get_all_outputs(config, as_dict=True).keys() 
+                                 if category.startswith('umap')
+                                 for f in get_all_outputs(config, as_dict=True)[category]],
+        sample_info=config['sample_info_file'],
+        dashboard_script="scripts/streamlit_qc_dashboard_optimized.py",
+        package_script="scripts/package_qc_for_laptop_fast_no_json.py"
+    output:
+        done=f"{RESULTS}/qc_report/COMPLETE_REPORT_DONE.txt"
+    params:
+        timestamp=lambda wildcards: datetime.now().strftime("%Y%m%d_%H%M%S")
+    log:
+        f"{LOGS}/generate_final_report.log"
+    shell:
+        """
+        echo "Generating downstream analysis dashboard (UMAP plots)..." | tee {log}
         
-        # Add optional parameters if they exist
-        if [ -n "{params.target_genes}" ]; then
-            CMD="$CMD --target-genes {params.target_genes}"
-        fi
+        # Create temporary file with input list
+        TMPFILE=$(mktemp /tmp/qc_files_complete_XXXXXX.txt)
+        for f in {input.files}; do
+            echo "$f" >> $TMPFILE
+        done
         
-        if [ -n "{params.stratification_column}" ]; then
-            CMD="$CMD --stratification-column {params.stratification_column}"
-        fi
+        # Run packaging script with 'complete' suffix to distinguish from basic report
+        python -u {input.package_script} \
+            --input-file-list $TMPFILE \
+            --sample-info {input.sample_info} \
+            --dashboard-script {input.dashboard_script} \
+            --output-archive {RESULTS}/qc_dashboard_downstream_{params.timestamp}.tar.gz \
+            --per-cell-method-filter {config[cell_calling][default_method]} \
+            --guide-cutoff-filter 1,2 \
+            --threads {threads} &>> {log}
         
-        if [ -n "{params.stratification_values}" ]; then
-            CMD="$CMD --stratification-values {params.stratification_values}"
-        fi
+        # Clean up temp file
+        rm -f $TMPFILE
         
-        if [ -n "{params.non_targeting_strings}" ]; then
-            CMD="$CMD --non-targeting-strings {params.non_targeting_strings}"
-        fi
+        # Create done file
+        touch {output.done}
         
-        if [ "{params.use_gpu}" = "True" ]; then
-            CMD="$CMD --use-gpu"
-        fi
-        
-        # Execute command
-        eval $CMD &> {log}
+        echo "Downstream dashboard generated: qc_dashboard_downstream_{params.timestamp}.tar.gz" | tee -a {log}
         """

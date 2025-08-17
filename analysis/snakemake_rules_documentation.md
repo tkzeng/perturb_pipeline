@@ -48,7 +48,7 @@ Merges all FASTQ sources for comprehensive analysis: main raw + main recovered +
 
 ### `rule filter_and_annotate_sublibrary`
 **Lines: 622-684**  
-Filters and annotates sublibrary data by combining GEX and guide samples. Key operations include: 1) Filtering GEX to top 3x expected cells + 5x random background cells (or keeping all with --skip-filtering), 2) Filtering guide data to match GEX barcodes, 3) Combining datasets and adding guide counts/assignments to obsm, 4) Adding comprehensive gene annotations from GENCODE, 5) Calculating QC metrics (mitochondrial %, counts, genes), 6) Mapping cells to samples/wells using Parse Bio barcodes, 7) Outputting annotated h5ad and MTX files for downstream cell calling.
+Prepares and annotates sublibrary data by combining GEX and guide samples. Key operations include: 1) Preparing GEX data (applying minimum UMI filter only), 2) Aligning guide data to match GEX barcodes, 3) Combining datasets and adding guide counts/assignments to obsm, 4) Adding comprehensive gene annotations from GENCODE, 5) Calculating QC metrics (mitochondrial %, counts, genes), 6) Mapping cells to samples/wells using Parse Bio barcodes, 7) Outputting annotated h5ad and MTX files for downstream cell calling.
 
 ## Quality Control
 
@@ -62,7 +62,7 @@ Calculates comprehensive read mapping statistics from kallisto outputs. Integrat
 
 ### `rule cell_calling_analysis`
 **Lines: 749-790**  
-Performs comprehensive cell calling analysis using multiple methods: 1) Expected cell count (top N barcodes), 2) Simple UMI threshold, 3) BarcodeRanks knee point, 4) BarcodeRanks inflection point, and optionally EmptyDrops with various FDR thresholds (DEPRECATED - EmptyDrops is not recommended as it tends to be too lenient). Runs DropletUtils (BarcodeRanks and optionally EmptyDrops) via R script on the pre-filtered matrix from filter_and_annotate_sublibrary. Calculates percentage of UMIs captured by each method and saves results including cell barcodes for each approach.
+Performs comprehensive cell calling analysis using multiple methods: 1) Expected cell count (top N barcodes), 2) Simple UMI threshold, 3) BarcodeRanks knee point, 4) BarcodeRanks inflection point. Runs DropletUtils BarcodeRanks via minimal R script on the pre-filtered matrix from filter_and_annotate_sublibrary. Calculates percentage of UMIs captured by each method and saves results including cell barcodes for each approach.
 
 ### `rule cell_calling_plots`
 **Lines: 792-834**  
