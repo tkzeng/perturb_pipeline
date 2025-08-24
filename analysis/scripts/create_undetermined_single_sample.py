@@ -79,7 +79,6 @@ def find_matching_files(recovery_dir, i7_seq, i5_seq, seq_to_name):
         # Determine match type
         matched = False
         matched_by = None
-        index_order = "normal"
         
         # Check normal order (i7+i5)
         if (idx1_match and idx1_match != "UNKNOWN" and 
@@ -97,34 +96,15 @@ def find_matching_files(recovery_dir, i7_seq, i5_seq, seq_to_name):
                 matched_by = "i5_only"
                 matched = True
         
-        # Check swapped order (i5+i7)
-        if not matched:
-            if (idx1_match and idx1_match != "UNKNOWN" and 
-                idx1_match == seq_to_name.get(i5_seq, i5_seq)):
-                if (idx2_match and idx2_match != "UNKNOWN" and 
-                    idx2_match == seq_to_name.get(i7_seq, i7_seq)):
-                    matched_by = "both"
-                    matched = True
-                    index_order = "swapped"
-                elif idx2_match == "UNKNOWN":
-                    matched_by = "i5_only"
-                    matched = True
-                    index_order = "swapped"
-            elif idx1_match == "UNKNOWN":
-                if (idx2_match and idx2_match != "UNKNOWN" and 
-                    idx2_match == seq_to_name.get(i7_seq, i7_seq)):
-                    matched_by = "i7_only"
-                    matched = True
-                    index_order = "swapped"
+        # Swapped indices should never happen - removed check
         
         if matched:
             matches.append({
                 'filename_base': base_name,
                 'matched_by': matched_by,
-                'i7_match': part1 if index_order == "normal" else part2,
-                'i5_match': part2 if index_order == "normal" else part1,
-                'orientation': orientation,
-                'index_order': index_order
+                'i7_match': part1,
+                'i5_match': part2,
+                'orientation': orientation
             })
     
     return matches
@@ -198,9 +178,9 @@ def main():
     total_reads = 0
     
     for match in matches:
-        # Valid if: has direct orientation for at least one index AND normal index order
+        # Valid if: has direct orientation for at least one index
         orientation = match['orientation']
-        valid = ('direct' in orientation and match['index_order'] == 'normal')
+        valid = ('direct' in orientation)
         
         if valid:
             match['read_count'] = read_counts.get(match['filename_base'], 0)
