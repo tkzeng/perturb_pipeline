@@ -230,6 +230,23 @@ def find_fastq_file(sample_id, read, source=None, processing=None, config=None, 
                 matches = glob.glob(search_pattern)
                 if matches:
                     return matches[0]
+                
+                # Try alternative naming patterns for GEX/gRNA files
+                # Pattern: GEX_R1_sub1.fastq.gz or gRNA_R1_sub1.fastq.gz
+                if '_gex' in sample_name:
+                    # Extract the sub number from sample_name (e.g., sub1_gex -> sub1)
+                    sub_num = sample_name.replace('_gex', '')
+                    search_pattern = os.path.join(fastq_dir, f"GEX_{read}_{sub_num}.fastq.gz")
+                    matches = glob.glob(search_pattern)
+                    if matches:
+                        return matches[0]
+                elif '_grna' in sample_name or '_guide' in sample_name:
+                    # Extract the sub number from sample_name (e.g., sub1_grna -> sub1)
+                    sub_num = sample_name.replace('_grna', '').replace('_guide', '')
+                    search_pattern = os.path.join(fastq_dir, f"gRNA_{read}_{sub_num}.fastq.gz")
+                    matches = glob.glob(search_pattern)
+                    if matches:
+                        return matches[0]
     
     # Use dictionary lookup for standard patterns
     key = (source, processing)

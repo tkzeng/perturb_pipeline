@@ -59,7 +59,7 @@ rule all:
     input:
         get_all_outputs(config),  # Default: main+raw and all+merged
         # Temporary: ensure kite index is built
-        f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx" 
+        f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx" 
 
 
 
@@ -256,13 +256,13 @@ rule kite_index:
     input:
         guides=lambda wildcards: config['guide_file']
     output:
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
-        fa=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
+        index_idx=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        fa=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
     log:
         f"{LOGS}/kite_index.log"
     params:
-        outdir=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
+        outdir=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
     threads: config["resources"]["alignment"]["threads"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
@@ -333,7 +333,8 @@ rule kallisto_gex:
         processing="raw|recovered|merged"
     params:
         out=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}",
-        strand=config["analysis"]["strand"]
+        strand=config["analysis"]["strand"],
+        tech=config["analysis"]["kb_chemistry"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
@@ -352,6 +353,7 @@ rule kallisto_gex:
             nac {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            "{params.tech}" \
             --cdna {input.cdna} --nascent {input.nascent} --mm &> {log}
         """
 
@@ -362,8 +364,8 @@ rule kallisto_guide:
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
         barcodes=config["input_paths"]["barcodes_file"],
         replace=config["input_paths"]["replace_file"],
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        index_idx=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
         # Ensure barcode recovery is done first if processing recovered reads
         recovery_done=lambda wildcards: f"{SCRATCH}/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
         # Script dependency
@@ -383,7 +385,8 @@ rule kallisto_guide:
         processing="raw|recovered|merged"
     params:
         out=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}",
-        strand=config["analysis"]["strand"]
+        strand=config["analysis"]["strand"],
+        tech=config["analysis"]["kb_chemistry"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
@@ -397,7 +400,8 @@ rule kallisto_guide:
         python scripts/run_kb_count.py \
             kite {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
-            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} &> {log}
+            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            "{params.tech}" &> {log}
         """
 
 
@@ -423,7 +427,8 @@ rule kallisto_gex_subsampled:
         fraction="0\\.1|0\\.25|0\\.5|0\\.75"
     params:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_all",
-        strand=config["analysis"]["strand"]
+        strand=config["analysis"]["strand"],
+        tech=config["analysis"]["kb_chemistry"]
     threads:
         config["resources"]["alignment"]["threads"]
     resources:
@@ -442,6 +447,7 @@ rule kallisto_gex_subsampled:
             nac {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            "{params.tech}" \
             --cdna {input.cdna} --nascent {input.nascent} --mm \
             --max-reads $TARGET_READS &> {log}
         """
@@ -454,8 +460,8 @@ rule kallisto_guide_subsampled:
         read_counts=f"{RESULTS}/{{sample_id}}/counts.txt",
         replace=config["input_paths"]["replace_file"],
         barcodes=config["input_paths"]["barcodes_file"],
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        index_idx=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"references_{config['analysis_name']}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
         script="scripts/run_kb_count.py"
     output:
         kb_info=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide/kb_info.json",
@@ -467,7 +473,8 @@ rule kallisto_guide_subsampled:
         fraction="0\\.1|0\\.25|0\\.5|0\\.75"
     params:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide",
-        strand=config["analysis"]["strand"]
+        strand=config["analysis"]["strand"],
+        tech=config["analysis"]["kb_chemistry"]
     threads:
         config["resources"]["alignment"]["threads"]
     resources:
@@ -486,6 +493,7 @@ rule kallisto_guide_subsampled:
             kite {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            "{params.tech}" \
             --max-reads $TARGET_READS &> {log}
         """
 

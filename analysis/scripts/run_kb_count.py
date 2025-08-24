@@ -19,7 +19,7 @@ def run_kb_count(args):
         "-i", args.index,
         "-g", args.t2g,
         "-o", args.output,
-        "-x", "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0",  # Always the same
+        "-x", args.tech,
         "-t", str(args.threads),
         "--workflow", args.workflow,
         "--strand", args.strand,
@@ -77,6 +77,7 @@ def main():
     parser.add_argument("t2g", help="T2G file")
     parser.add_argument("barcodes", help="Barcodes file")
     parser.add_argument("replace", help="Replace file")
+    parser.add_argument("tech", help="Technology string for -x parameter")
     
     # Optional workflow-specific arguments
     parser.add_argument("--cdna", help="cDNA file (for nac workflow)")

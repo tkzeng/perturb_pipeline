@@ -259,7 +259,7 @@ def save_qc_cell_lists(adata, output_path, config=None):
         output_path: Path to save TSV file with cell lists
         config: Configuration dictionary for fallback options
     """
-    print("\nCalculating QC filtering decisions for all methods..."))
+    print("\nCalculating QC filtering decisions for all methods...")
     
     # Initialize DataFrame with barcodes
     cell_lists = pd.DataFrame({'barcode': adata.obs.index})
@@ -267,73 +267,95 @@ def save_qc_cell_lists(adata, output_path, config=None):
     # Get mitochondrial values
     mito_values = adata.obs['pct_counts_mt'].values
     
-    # Calculate basic statistics for simple methods
-    median = np.median(mito_values)
-    mad = median_abs_deviation(mito_values)
+    # DISABLED: MAD-based methods
+    # Create dummy columns for compatibility - keep all cells
+    cell_lists['median_plus_2mad'] = True  # Keep all cells
+    cell_lists['median_plus_3mad'] = True  # Keep all cells
     
-    # MAD-based methods
-    cell_lists['median_plus_2mad'] = mito_values < (median + 2 * mad)
-    cell_lists['median_plus_3mad'] = mito_values < (median + 3 * mad)
+    print("  MAD-based filtering disabled - keeping all cells")
     
-    # Percentile-based methods
-    cell_lists['percentile_95'] = mito_values < np.percentile(mito_values, 95)
-    cell_lists['percentile_99'] = mito_values < np.percentile(mito_values, 99)
+    # # Calculate basic statistics for simple methods - DISABLED
+    # median = np.median(mito_values)
+    # mad = median_abs_deviation(mito_values)
+    # 
+    # # MAD-based methods - DISABLED
+    # cell_lists['median_plus_2mad'] = mito_values < (median + 2 * mad)
+    # cell_lists['median_plus_3mad'] = mito_values < (median + 3 * mad)
     
-    # 2D GMM method (DEFAULT)
-    if 'total_counts' in adata.obs.columns and 'n_genes' in adata.obs.columns:
-        # Calculate 2D GMM
-        gmm_2d_stats = calculate_2d_gmm_statistics(
-            mito_values,
-            adata.obs['total_counts'].values,
-            adata.obs['n_genes'].values
-        )
-        
-        if gmm_2d_stats['converged']:
-            # Recalculate posteriors for all cells
-            log_umis = np.log1p(adata.obs['total_counts'].values)
-            log_genes = np.log1p(adata.obs['n_genes'].values)
-            
-            # Recreate regression residuals
-            lr = LinearRegression()
-            lr.fit(log_umis.reshape(-1, 1), log_genes)
-            predicted_log_genes = lr.predict(log_umis.reshape(-1, 1))
-            residuals = log_genes - predicted_log_genes
-            
-            # Standardize features
-            features = np.column_stack([mito_values, residuals])
-            scaler = StandardScaler()
-            features_scaled = scaler.fit_transform(features)
-            
-            # Fit GMM to get posteriors
-            gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
-            gmm.fit(features_scaled)
-            posteriors = gmm.predict_proba(features_scaled)
-            
-            # Identify compromised component
-            means_original = scaler.inverse_transform(gmm.means_)
-            if means_original[0, 0] > means_original[1, 0]:  # Higher mito% = compromised
-                compromised_idx = 0
-            else:
-                compromised_idx = 1
-            
-            # Set filtering decisions
-            prob_compromised = posteriors[:, compromised_idx]
-            cell_lists['gmm_2d_posterior_75'] = prob_compromised < 0.75
-            cell_lists['gmm_2d_posterior_50'] = prob_compromised < 0.50
-            cell_lists['gmm_2d_posterior_90'] = prob_compromised < 0.90
-        else:
-            # Get fallback method from config
-            fallback_method = config['qc_filtering']['gmm_fallback_method']
-            
-            print(f"  Warning: 2D GMM failed to converge ({gmm_2d_stats.get('error', 'Unknown error')})")
-            print(f"  Using fallback method: {fallback_method}")
-            
-            # Use fallback column values
-            cell_lists['gmm_2d_posterior_75'] = cell_lists[fallback_method]
-            cell_lists['gmm_2d_posterior_50'] = cell_lists[fallback_method]
-            cell_lists['gmm_2d_posterior_90'] = cell_lists[fallback_method]
-    else:
-        raise ValueError("Missing required data (total_counts or n_genes) for 2D GMM calculation")
+    # DISABLED: Mito percentile-based methods
+    # Create dummy columns for compatibility - keep all cells
+    cell_lists['percentile_95'] = True  # Keep all cells  
+    cell_lists['percentile_99'] = True  # Keep all cells
+    
+    print("  Mito percentile filtering disabled - keeping all cells")
+    
+    # # Percentile-based methods - DISABLED
+    # cell_lists['percentile_95'] = mito_values < np.percentile(mito_values, 95)
+    # cell_lists['percentile_99'] = mito_values < np.percentile(mito_values, 99)
+    
+    # DISABLED: GMM and mito filtering removed from pipeline
+    # Create dummy columns for compatibility
+    cell_lists['gmm_2d_posterior_75'] = True  # Keep all cells
+    cell_lists['gmm_2d_posterior_50'] = True  # Keep all cells
+    cell_lists['gmm_2d_posterior_90'] = True  # Keep all cells
+    
+    print("  GMM and mito filtering disabled - keeping all cells for GMM methods")
+    
+    # # 2D GMM method (DEFAULT) - DISABLED
+    # if 'total_counts' in adata.obs.columns and 'n_genes' in adata.obs.columns:
+    #     # Calculate 2D GMM
+    #     gmm_2d_stats = calculate_2d_gmm_statistics(
+    #         mito_values,
+    #         adata.obs['total_counts'].values,
+    #         adata.obs['n_genes'].values
+    #     )
+    #     
+    #     if gmm_2d_stats['converged']:
+    #         # Recalculate posteriors for all cells
+    #         log_umis = np.log1p(adata.obs['total_counts'].values)
+    #         log_genes = np.log1p(adata.obs['n_genes'].values)
+    #         
+    #         # Recreate regression residuals
+    #         lr = LinearRegression()
+    #         lr.fit(log_umis.reshape(-1, 1), log_genes)
+    #         predicted_log_genes = lr.predict(log_umis.reshape(-1, 1))
+    #         residuals = log_genes - predicted_log_genes
+    #         
+    #         # Standardize features
+    #         features = np.column_stack([mito_values, residuals])
+    #         scaler = StandardScaler()
+    #         features_scaled = scaler.fit_transform(features)
+    #         
+    #         # Fit GMM to get posteriors
+    #         gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
+    #         gmm.fit(features_scaled)
+    #         posteriors = gmm.predict_proba(features_scaled)
+    #         
+    #         # Identify compromised component
+    #         means_original = scaler.inverse_transform(gmm.means_)
+    #         if means_original[0, 0] > means_original[1, 0]:  # Higher mito% = compromised
+    #             compromised_idx = 0
+    #         else:
+    #             compromised_idx = 1
+    #         
+    #         # Set filtering decisions
+    #         prob_compromised = posteriors[:, compromised_idx]
+    #         cell_lists['gmm_2d_posterior_75'] = prob_compromised < 0.75
+    #         cell_lists['gmm_2d_posterior_50'] = prob_compromised < 0.50
+    #         cell_lists['gmm_2d_posterior_90'] = prob_compromised < 0.90
+    #     else:
+    #         # Get fallback method from config
+    #         fallback_method = config['qc_filtering']['gmm_fallback_method']
+    #         
+    #         print(f"  Warning: 2D GMM failed to converge ({gmm_2d_stats.get('error', 'Unknown error')})")
+    #         print(f"  Using fallback method: {fallback_method}")
+    #         
+    #         # Use fallback column values
+    #         cell_lists['gmm_2d_posterior_75'] = cell_lists[fallback_method]
+    #         cell_lists['gmm_2d_posterior_50'] = cell_lists[fallback_method]
+    #         cell_lists['gmm_2d_posterior_90'] = cell_lists[fallback_method]
+    # else:
+    #     raise ValueError("Missing required data (total_counts or n_genes) for 2D GMM calculation")
     
     # Save to TSV
     cell_lists.to_csv(output_path, sep='\t', index=False)
@@ -1566,7 +1588,8 @@ def main():
                                pool=args.pool, read_stats=combined_read_stats)
     
     # Generate UMI vs genes scatter plots (both mito% and GMM posterior if available)
-    plot_umi_vs_genes_with_gmm(adata, cell_barcodes, args.sample_id, args.stratify_by, plot_dir)
+    # DISABLED: GMM and mito filtering removed from pipeline
+    # plot_umi_vs_genes_with_gmm(adata, cell_barcodes, args.sample_id, args.stratify_by, plot_dir)
     
     # Generate UMI vs guides scatter plots for each cutoff
     if 'guide_counts' in adata.obsm:
