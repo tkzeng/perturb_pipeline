@@ -1,0 +1,221 @@
+
+analysis_name: "gw_pilot"
+sample_info_file: "gw_references/sample_info_pilot.xlsx"
+plate_maps_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/plate_map.xlsx"
+guide_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides.txt"
+
+# Sample selection (leave empty to process all samples in sample_info_file)
+sample_ids: []
+
+# SLURM cluster configuration
+slurm:
+  partition: "pritch,engreitz,hns,owners,normal"  # Comma-separated list of partitions
+  account: "pritch"  # SLURM account for job submission
+
+# Processing combinations to run
+combinations:  # Which source/processing combinations to run
+  - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
+  - ["all", "merged"]
+
+kallisto:
+  # Chemistry v2:
+  # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111
+  # kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
+  #
+  # Chemistry v3:
+  # Amplicon: NNNNNNNNNN33333333ATGAGGGGTCAG22222222TCCAACCACCTC11111111
+  # kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"
+  kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"  # Using v2 chemistry
+  strand: "unstranded"  # Options: "forward" or "unstranded"
+  genome_types: ["all"]
+  index_prefix: "nascent"
+
+input_paths:
+  # Chemistry v2:
+  # - 96-well kit: Use replace.96_v2.txt and barcodes.96_v2.txt
+  # - 48-well kit: Use replace.48_v2.txt and barcodes.48_v2.txt  
+  # - Mini kit (12-well): Use replace.12_v2.txt and barcodes.12_v2.txt
+  #
+  # Chemistry v3:
+  # - 96-well kit: Use replace.96_v3.txt and barcodes.96_v3.txt
+  # - 48-well kit: Use replace.48_v3.txt and barcodes.48_v3.txt
+  # - Mini kit (12-well): Use replace.12_v3.txt and barcodes.12_v3.txt
+  replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96_v2.txt"
+  barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96_v2.txt"
+
+  # Chemistry v2:
+  # - 96-well: bc_data_n198_v5.csv
+  # - 48-well: bc_data_n99_v5.csv
+  # - 12-well: bc_data_n24_v4.csv
+  #
+  # Chemistry v3:
+  # - 96-well: bc_data_n299_R1_v3_6.csv
+  # - 48-well: bc_data_n141_R1_v3_6.csv
+  # - 12-well: bc_data_n37_R1_v3_6.csv
+  parsebio_barcodes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ParseBiosciences-Pipeline.1.6.0/splitpipe/barcodes/bc_data_n198_v5.csv"
+  
+  # Guide reference file for QC analysis
+  guide_reference: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/all_guides.20240917.tsv"
+
+
+
+  # IT IS OPTIONAL TO ADJUST THESE -> -> ->
+  # If not doing undetermined read recovery (processing="raw" only), this file is not used
+  primer_info_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/split_lp_primer.xlsx"
+  
+  # Gene annotation reference files
+  ribosomal_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ribosomal.txt"
+  cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
+  gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
+
+  # Reference genome/index locations
+  reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
+  nascent_genome: "nascent_all"  # Subdirectory with genome index files
+  
+
+
+# IT IS OPTIONAL TO ADJUST THESE -> -> ->
+
+# Cell calling parameters
+cell_calling:
+  # Methods to run (comment out any methods you want to skip)
+  # Available methods: Expected_Cells, UMI_Threshold, BarcodeRanks_Knee, BarcodeRanks_Inflection
+  # If using Expected_Cells or UMI_Threshold, you MUST specify expected_cells or min_umi_threshold in sample_info.tsv
+  methods_to_run:
+    - BarcodeRanks_Knee
+    - BarcodeRanks_Inflection
+  
+  # Default method to use for saturation analysis and other downstream analyses
+  default_method: "BarcodeRanks_Knee"
+  
+  # Saturation points for saturation analysis
+  saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+# Barcode recovery parameters
+barcode_recovery:
+  max_reads_recovery: null  # null = process all reads
+  max_shift: 4
+
+# Guide mixture model analysis parameters
+guide_mixture_model:
+  min_umi_threshold: 2  # Filter guides with < this many UMIs (1=filter only 0s, 2=filter 0s and 1s)
+  
+# Pseudobulk analysis parameters
+pseudobulk:
+  groupby_cols:  # Columns to group cells by for pseudobulking
+    - biological_sample
+    - mito_status  # Include mito groups for DE analysis
+    # - leiden
+  covariate_cols:  # Covariates to aggregate (mean, median, std)
+    - pct_counts_mt
+    - total_counts
+    - n_genes_by_counts
+    # Add more covariates as needed
+
+# Undetermined recovery parameters
+undetermined_recovery:
+  max_open_files: 5000
+
+# QC analysis parameters
+qc_analysis:
+  guide_cutoffs: [2, "gmm_50", "gmm_75"]
+  default_guide_cutoff: "gmm_50"  # Default guide cutoff to use for analyses
+  default_granularity: "biosample"  # Default granularity for GMM thresholds: "sample" or "biosample"
+
+# Sublibrary filtering parameters
+sublibrary_filtering:
+  min_umi_filter: 100
+
+
+# Resource allocation for different rule groups
+# Adjust these based on your dataset size and cluster capabilities
+resources:
+  # Heavy compute rules (kallisto alignment)
+  alignment:
+    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    threads: 8      # Reduced threads for smaller datasets
+  
+  # Heavy memory rules (matrix operations, cell calling)
+  analysis:
+    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    threads: 4      # Moderate parallelization for smaller datasets
+  
+  # Light rules (QC, stats, file operations)
+  light:
+    mem_mb: 32000   # 32GB
+    threads: 4
+
+# Sublibrary combination configuration
+combination:
+  groups:
+    all_pools:
+      pools: []  # Empty = all pools
+      name: "all_combined"
+  combine_all_pools: true
+
+# Combined sublibraries configuration
+combined_sublibraries:
+  # Output directory for combined sublibrary files (relative to results_base)
+  output_dir: "combined_sublibraries"
+  # Pools to include (empty list means all pools)
+  pools: []
+
+# Standard analyses configuration
+standard_analyses:
+  target_genes: []  # Empty list for no target gene analysis, or ["TP53", "CDKN1A"] for specific genes
+  use_gpu: false  # Use GPU acceleration (requires RAPIDS)
+  target_clusters: 3  # Target number of clusters for leiden clustering
+  n_hvgs: 2000  # Number of highly variable genes
+  clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
+  n_neighbors: 15  # Number of neighbors for UMAP calculation
+  n_pcs: 15  # Number of principal components to use for neighbors/UMAP
+  
+  # Single definition of analysis subsets used for both UMAP and DE
+  analysis_subsets:
+    - name: "low_mito"
+      filter: "adata.obs['posterior_prob_compromised'] < 0.75"
+    - name: "high_mito"
+      filter: "adata.obs['posterior_prob_compromised'] >= 0.75"
+  
+  # Non-targeting guide identifiers
+  non_targeting_strings: []  # Empty list for no non-targeting analysis, or ["non-targeting", "non.targeting"]
+  
+  # Scoring groups configuration (filter-based groups for DE analysis)
+  # First group is reference, second group is test
+  scoring_groups:
+    mito_status:
+      - name: "low_mito"
+        filter: "adata.obs['posterior_prob_compromised'] < 0.75"
+      - name: "high_mito"
+        filter: "adata.obs['posterior_prob_compromised'] >= 0.75"
+    guide_moi:
+      - name: "low_MOI"
+        filter: "adata.obs['n_guides_total'] <= 1"
+      - name: "high_MOI"
+        filter: "adata.obs['n_guides_total'] > 1"
+    
+    # Additional scoring groups can be added here
+    # Example:
+    # mito_level:
+    #   - name: "low_mito"
+    #     filter: "adata.obs['pct_counts_mt'] < 10"
+    #   - name: "high_mito"
+    #     filter: "adata.obs['pct_counts_mt'] >= 10"
+
+# Differential expression configuration
+differential_expression:
+  # Define contrasts for DE analysis (format: groupA_vs_groupB)
+  # Groups should match the column values in your group_column
+  contrasts:
+    - "high_mito_vs_low_mito"
+  
+  # Column in metadata that defines groups for comparison
+  # This should match a column created by scoring_groups or existing in your metadata
+  group_column: "mito_status"
+  
+  # Statistical thresholds
+  fdr_threshold: 0.05
+  logfc_threshold: 1
+  
+  # Design formula
+  design_formula: "~group"
