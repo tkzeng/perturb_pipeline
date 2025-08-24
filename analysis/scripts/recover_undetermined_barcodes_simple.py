@@ -31,9 +31,12 @@ def load_indices(indices_file):
         name = str(row.iloc[1]).strip()  # Column 1: name (Split P5_A1, etc.)
         index_seq = str(row.iloc[3]).strip().upper()  # Column 3: index sequence
         
-        if pd.notna(name) and pd.notna(index_seq):
-            index_direct[index_seq] = name
-            index_rc[reverse_complement(index_seq)] = name
+        # Crash if invalid data
+        assert pd.notna(name), f"Name is NaN in row {_}"
+        assert pd.notna(index_seq), f"Index sequence is NaN in row {_}"
+        
+        index_direct[index_seq] = name
+        index_rc[reverse_complement(index_seq)] = name
     
     print(f"Loaded {len(index_direct)} direct indices and {len(index_rc)} RC indices")
     return index_direct, index_rc
@@ -109,103 +112,105 @@ def process_reads(r1_file, r2_file, index_direct, index_rc, output_dir):
         total += 1
         
         
-        # Extract indices from comment field
-        if r1.comment:
-            parts = r1.comment.split(':')
-            if len(parts) >= 4 and '+' in parts[-1]:
-                indices = parts[-1].split('+')
-                if len(indices) == 2:
-                    idx1, idx2 = indices[0], indices[1]
-                    
-                    # Look up index names - check both direct and RC
-                    name1 = "UNKNOWN"
-                    name2 = "UNKNOWN"
-                    idx1_orientation = "unknown"
-                    idx2_orientation = "unknown"
-                    
-                    if idx1 in index_direct:
-                        name1 = index_direct[idx1]
-                        idx1_orientation = "direct"
-                    elif idx1 in index_rc:
-                        name1 = index_rc[idx1]
-                        idx1_orientation = "rc"
-                        
-                    if idx2 in index_direct:
-                        name2 = index_direct[idx2]
-                        idx2_orientation = "direct"
-                    elif idx2 in index_rc:
-                        name2 = index_rc[idx2]
-                        idx2_orientation = "rc"
-                    
-                    # Skip if both unknown
-                    if name1 == "UNKNOWN" and name2 == "UNKNOWN":
-                        continue
-                    
-                    # Create output file name - use "UNKNOWN" for unmatched indices
-                    idx1_for_filename = idx1 if name1 != "UNKNOWN" else "UNKNOWN"
-                    idx2_for_filename = idx2 if name2 != "UNKNOWN" else "UNKNOWN"
-                    output_name = f"{idx1_for_filename}+{idx2_for_filename}_{idx1_orientation}_{idx2_orientation}"
-                    recovered += 1
-                    match_counts[output_name] += 1
-                    
-                    # Store metadata for later
-                    if output_name not in metadata:
-                        metadata[output_name] = {
-                            'idx1_seq': idx1,
-                            'idx2_seq': idx2,
-                            'idx1_name': name1,
-                            'idx2_name': name2,
-                            'idx1_orientation': idx1_orientation,
-                            'idx2_orientation': idx2_orientation
-                        }
-                    
-                    # If files don't exist yet, check if we should create them
-                    if output_name not in output_handles:
-                        # Buffer reads until we hit 1000
-                        if match_counts[output_name] < 1000:
-                            # Store read data for later
-                            r1_data = f"@{r1.name} {r1.comment}\n{r1.sequence}\n+\n{r1.quality}\n"
-                            r2_data = f"@{r2.name} {r2.comment}\n{r2.sequence}\n+\n{r2.quality}\n"
-                            pending_reads[output_name].append((r1_data, r2_data))
-                            continue  # Don't write yet
-                        else:
-                            # Hit 1000 reads! Create files and write all pending reads
-                            seen_combinations.add(output_name)
-                            r1_path = os.path.join(output_dir, f"{output_name}_R1.fastq.gz")
-                            r2_path = os.path.join(output_dir, f"{output_name}_R2.fastq.gz")
-                            
-                            # Open gzip files with fast compression (level 1)
-                            r1_out = gzip.open(r1_path, 'wt', compresslevel=1)
-                            r2_out = gzip.open(r2_path, 'wt', compresslevel=1)
-                            
-                            output_handles[output_name] = (r1_out, r2_out)
-                            
-                            # Write all pending reads
-                            r1_out, r2_out = output_handles[output_name]
-                            for r1_data, r2_data in pending_reads[output_name]:
-                                r1_out.write(r1_data)
-                                r2_out.write(r2_data)
-                            
-                            # Clear the buffer
-                            del pending_reads[output_name]
-                            
-                            # Write the current (1000th) read
-                            r1_out.write(f"@{r1.name} {r1.comment}\n{r1.sequence}\n+\n{r1.quality}\n")
-                            r2_out.write(f"@{r2.name} {r2.comment}\n{r2.sequence}\n+\n{r2.quality}\n")
-                            
-                            # Flush immediately after file creation to ensure 1000 reads are visible
-                            r1_out.flush()
-                            r2_out.flush()
-                    else:
-                        # Files already exist, write directly (no buffering after 1000)
-                        r1_out, r2_out = output_handles[output_name]
-                        r1_out.write(f"@{r1.name} {r1.comment}\n{r1.sequence}\n+\n{r1.quality}\n")
-                        r2_out.write(f"@{r2.name} {r2.comment}\n{r2.sequence}\n+\n{r2.quality}\n")
-                        
-                        # Periodic flush every 1000 reads
-                        if match_counts[output_name] % 1000 == 0:
-                            r1_out.flush()
-                            r2_out.flush()
+        # Extract indices from comment field - crash if invalid
+        parts = r1.comment.split(':')
+        assert len(parts) >= 4, f"Invalid comment format: {r1.comment}"
+        assert '+' in parts[-1], f"No '+' in indices: {parts[-1]}"
+        
+        indices = parts[-1].split('+')
+        assert len(indices) == 2, f"Expected 2 indices, got {len(indices)}: {indices}"
+        
+        idx1, idx2 = indices[0], indices[1]
+        
+        # Look up index names - check both direct and RC
+        name1 = "UNKNOWN"
+        name2 = "UNKNOWN"
+        idx1_orientation = "unknown"
+        idx2_orientation = "unknown"
+        
+        if idx1 in index_direct:
+            name1 = index_direct[idx1]
+            idx1_orientation = "direct"
+        elif idx1 in index_rc:
+            name1 = index_rc[idx1]
+            idx1_orientation = "rc"
+            
+        if idx2 in index_direct:
+            name2 = index_direct[idx2]
+            idx2_orientation = "direct"
+        elif idx2 in index_rc:
+            name2 = index_rc[idx2]
+            idx2_orientation = "rc"
+        
+        # Skip if both unknown
+        if name1 == "UNKNOWN" and name2 == "UNKNOWN":
+            continue
+        
+        # Create output file name - use "UNKNOWN" for unmatched indices
+        idx1_for_filename = idx1 if name1 != "UNKNOWN" else "UNKNOWN"
+        idx2_for_filename = idx2 if name2 != "UNKNOWN" else "UNKNOWN"
+        output_name = f"{idx1_for_filename}+{idx2_for_filename}_{idx1_orientation}_{idx2_orientation}"
+        recovered += 1
+        match_counts[output_name] += 1
+        
+        # Store metadata for later
+        if output_name not in metadata:
+            metadata[output_name] = {
+                'idx1_seq': idx1,
+                'idx2_seq': idx2,
+                'idx1_name': name1,
+                'idx2_name': name2,
+                'idx1_orientation': idx1_orientation,
+                'idx2_orientation': idx2_orientation
+            }
+        
+        # If files don't exist yet, check if we should create them
+        if output_name not in output_handles:
+            # Buffer reads until we hit 1000
+            if match_counts[output_name] < 1000:
+                # Store read data for later
+                r1_data = f"@{r1.name} {r1.comment}\n{r1.sequence}\n+\n{r1.quality}\n"
+                r2_data = f"@{r2.name} {r2.comment}\n{r2.sequence}\n+\n{r2.quality}\n"
+                pending_reads[output_name].append((r1_data, r2_data))
+                continue  # Don't write yet
+            else:
+                # Hit 1000 reads! Create files and write all pending reads
+                seen_combinations.add(output_name)
+                r1_path = os.path.join(output_dir, f"{output_name}_R1.fastq.gz")
+                r2_path = os.path.join(output_dir, f"{output_name}_R2.fastq.gz")
+                
+                # Open gzip files with fast compression (level 1)
+                r1_out = gzip.open(r1_path, 'wt', compresslevel=1)
+                r2_out = gzip.open(r2_path, 'wt', compresslevel=1)
+                
+                output_handles[output_name] = (r1_out, r2_out)
+                
+                # Write all pending reads
+                r1_out, r2_out = output_handles[output_name]
+                for r1_data, r2_data in pending_reads[output_name]:
+                    r1_out.write(r1_data)
+                    r2_out.write(r2_data)
+                
+                # Clear the buffer
+                del pending_reads[output_name]
+                
+                # Write the current (1000th) read
+                r1_out.write(f"@{r1.name} {r1.comment}\n{r1.sequence}\n+\n{r1.quality}\n")
+                r2_out.write(f"@{r2.name} {r2.comment}\n{r2.sequence}\n+\n{r2.quality}\n")
+                
+                # Flush immediately after file creation to ensure 1000 reads are visible
+                r1_out.flush()
+                r2_out.flush()
+        else:
+            # Files already exist, write directly (no buffering after 1000)
+            r1_out, r2_out = output_handles[output_name]
+            r1_out.write(f"@{r1.name} {r1.comment}\n{r1.sequence}\n+\n{r1.quality}\n")
+            r2_out.write(f"@{r2.name} {r2.comment}\n{r2.sequence}\n+\n{r2.quality}\n")
+            
+            # Periodic flush every 1000 reads
+            if match_counts[output_name] % 1000 == 0:
+                r1_out.flush()
+                r2_out.flush()
         
         # Progress report every 5 seconds
         current_time = time.time()
