@@ -53,16 +53,18 @@ def process_pseudobulk(adata, groupby_cols, covariate_cols):
     
     # Aggregate covariates if provided
     if covariate_cols:
-        # Only aggregate numeric covariates that exist
+        # Validate all covariates exist
+        missing_covariates = [col for col in covariate_cols if col not in adata.obs.columns]
+        if missing_covariates:
+            raise ValueError(f"Missing covariate columns in adata.obs: {missing_covariates}")
+        
+        # Validate all covariates are numeric
         numeric_covariates = []
         for col in covariate_cols:
-            if col in adata.obs.columns:
-                if pd.api.types.is_numeric_dtype(adata.obs[col]):
-                    numeric_covariates.append(col)
-                else:
-                    print(f"Skipping non-numeric covariate: {col}")
+            if pd.api.types.is_numeric_dtype(adata.obs[col]):
+                numeric_covariates.append(col)
             else:
-                print(f"Warning: Covariate column '{col}' not found in adata.obs")
+                raise ValueError(f"Covariate column '{col}' is not numeric")
         
         if numeric_covariates:
             covariate_stats = adata.obs.groupby(groupby_cols)[numeric_covariates].agg(['mean', 'median', 'std'])

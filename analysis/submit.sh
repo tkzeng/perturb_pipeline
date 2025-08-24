@@ -103,7 +103,8 @@ DEFAULT_ARGS=(
         combine_sublibraries \
         standard_analyses \
         plot_standard_analyses_umap \
-        #pseudobulk_tmm \
+        pseudobulk_tmm \
+        differential_expression \
         generate_downstream_report
 )
 

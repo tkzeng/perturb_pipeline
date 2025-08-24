@@ -150,6 +150,11 @@ def parse_path_metadata(file_path, base_path):
                 metadata['de_subset'] = parts[3]    # e.g., "all_cells_scores", "low_mito", "high_mito" 
                 metadata['metric'] = parts[4]       # e.g., "pct_counts_mt", "guide_moi_score_pos"
             
+            elif category in ['de_volcano', 'de_ma_plot']:
+                # Structure: {de_volcano|de_ma_plot}/{source}_{processing}/{contrast}/plot.png
+                metadata['plot_type'] = category
+                metadata['contrast'] = parts[2] if len(parts) > 2 else 'unknown'
+            
             # Handle any other categories generically
             else:
                 for i in range(2, len(parts)):

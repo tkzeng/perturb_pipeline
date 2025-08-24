@@ -284,11 +284,12 @@ def target_gene_strategy(adata, group_def, cutoff, non_targeting_strings):
     }
 
 
-def filter_group_strategy(adata, group_def):
+def filter_group_strategy(adata, group_def, config_key):
     """Filter-based grouping strategy for differential expression.
     
     group_def should be a list of dicts with 'name' and 'filter'.
     First group is reference, second group is test.
+    config_key is the name from the config to use as the column name.
     """
     if len(group_def) != 2:
         raise ValueError(f"filter_group_strategy requires exactly 2 groups, got {len(group_def)}")
@@ -305,18 +306,23 @@ def filter_group_strategy(adata, group_def):
         group_name = group['name']
         filter_expr = group['filter']
         
-        # Evaluate filter expression
-        mask = eval(filter_expr)
-        categories.loc[mask] = group_name
-        log_print(f"    Group '{group_name}': {mask.sum()} cells")
+        # Evaluate filter expression with error handling
+        try:
+            mask = eval(filter_expr)
+            categories.loc[mask] = group_name
+            log_print(f"    Group '{group_name}': {mask.sum()} cells")
+        except KeyError as e:
+            log_print(f"    ⚠️ ERROR: Column not found for filter '{filter_expr}': {e}")
+            log_print(f"    Available columns: {list(adata.obs.columns)}")
+            raise ValueError(f"Filter expression references non-existent column: {e}")
     
     categories = categories.astype('category')
     
-    # Generate group name based on test vs reference
-    group_name = f"{test_group}_vs_{reference_group}"
-    score_prefix = group_name
+    # Use config key as column name, keep contrast-style for score prefix
+    group_name = config_key
+    score_prefix = f"{test_group}_vs_{reference_group}"
     
-    log_print(f"  Created {group_name}: {categories.value_counts().to_dict()}")
+    log_print(f"  Created column '{group_name}': {categories.value_counts().to_dict()}")
     
     return {
         "group_name": group_name,
@@ -545,8 +551,10 @@ def calculate_unified_scores(adata, scoring_config, use_gpu, cutoff, non_targeti
             # Create grouping using strategy function
             if strategy == "target_gene_strategy":
                 group_config = strategy_func(adata, group_def, cutoff=cutoff, non_targeting_strings=non_targeting_strings)
-            else:
+            elif strategy == "cluster_strategy":
                 group_config = strategy_func(adata, group_def)
+            else:  # filter_group_strategy and any other future strategies
+                group_config = strategy_func(adata, group_def, config_key=config_name)
 
             # Skip if strategy function returns None (e.g., missing cluster count)
             if group_config is None:
@@ -692,15 +700,6 @@ def save_analysis_results(adata, final_output_file):
     # Remove .raw if it exists
     adata_final.raw = None
 
-    # Clean up obs columns (remove guide data now stored in obsm)
-    guide_cols = [col for col in adata_final.obs.columns if "_guide" in col]
-    # Get target gene columns from the uns metadata
-    target_gene_names = adata_final.uns.get("guide_target_names", [])
-    target_cols = [col for col in target_gene_names if col in adata_final.obs.columns]
-    cols_to_remove = guide_cols + target_cols
-    if cols_to_remove:
-        log_print(f"🧽 Removing {len(cols_to_remove)} guide columns from obs (now in obsm): {cols_to_remove[:5]}...")
-        adata_final.obs = adata_final.obs.drop(columns=cols_to_remove)
 
     log_print(f"🎆 Created final dataset with shape: {adata_final.shape}")
     log_print(f"📋 Layers: {list(adata_final.layers.keys())}")

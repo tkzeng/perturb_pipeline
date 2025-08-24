@@ -103,9 +103,7 @@ guide_mixture_model:
 pseudobulk:
   groupby_cols:  # Columns to group cells by for pseudobulking
     - biological_sample
-    # Add more grouping variables as needed, e.g.:
-    # - perturbation
-    # - timepoint
+    - mito_status  # Include mito groups for DE analysis
     # - leiden
   covariate_cols:  # Covariates to aggregate (mean, median, std)
     - pct_counts_mt
@@ -184,6 +182,11 @@ standard_analyses:
   # Scoring groups configuration (filter-based groups for DE analysis)
   # First group is reference, second group is test
   scoring_groups:
+    mito_status:
+      - name: "low_mito"
+        filter: "adata.obs['posterior_prob_compromised'] < 0.75"
+      - name: "high_mito"
+        filter: "adata.obs['posterior_prob_compromised'] >= 0.75"
     guide_moi:
       - name: "low_MOI"
         filter: "adata.obs['n_guides_total'] <= 1"
@@ -197,3 +200,21 @@ standard_analyses:
     #     filter: "adata.obs['pct_counts_mt'] < 10"
     #   - name: "high_mito"
     #     filter: "adata.obs['pct_counts_mt'] >= 10"
+
+# Differential expression configuration
+differential_expression:
+  # Define contrasts for DE analysis (format: groupA_vs_groupB)
+  # Groups should match the column values in your group_column
+  contrasts:
+    - "high_mito_vs_low_mito"
+  
+  # Column in metadata that defines groups for comparison
+  # This should match a column created by scoring_groups or existing in your metadata
+  group_column: "mito_status"
+  
+  # Statistical thresholds
+  fdr_threshold: 0.05
+  logfc_threshold: 1
+  
+  # Design formula
+  design_formula: "~group"

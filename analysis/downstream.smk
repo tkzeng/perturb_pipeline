@@ -46,16 +46,7 @@ def load_sample_info_wrapper():
 rule all:
     """Target rule for downstream analysis pipeline with complete report generation"""
     input:
-        # All preprocessed files based on configuration
-        preprocessed_files=[f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/preprocessed_{source}_{processing}.h5ad"
-                           for source, processing in config['combinations']],
-        # UMAP plots for each preprocessed file
-        umap_plots=[f"{RESULTS}/downstream_report/plots/umap/{source}_{processing}.complete"
-                   for source, processing in config['combinations']],
-        # Pseudobulk TMM results
-        pseudobulk_files=[f"{RESULTS}/pseudobulk/{source}_{processing}/pseudobulk_tmm_cpm.tsv"
-                         for source, processing in config['combinations']],
-        # Final complete report with all analyses
+        # Final complete report - this triggers all downstream analyses via get_downstream_outputs()
         final_report=f"{RESULTS}/downstream_report/COMPLETE_REPORT_DONE.txt"
 
 
@@ -63,13 +54,7 @@ rule all:
 # SUBLIBRARY COMBINATION
 # =============================================================================
 rule combine_sublibraries:
-    """Combine cell-called sublibraries into a single analysis-ready file
-    
-    WARNING: THIS RULE IS IN DEVELOPMENT AND NOT READY FOR USE
-    The combine_sublibraries.py script and related functionality 
-    are still being tested and may not work correctly. Do not use this rule
-    for production analysis yet.
-    """
+    """Combine cell-called sublibraries into a single analysis-ready file"""
     input:
         # Annotated h5ad files (have annotations but need cell calling applied)
         h5ad_files=lambda wildcards: [
@@ -129,11 +114,6 @@ rule combine_sublibraries:
 rule standard_analyses:
     """Standard analyses including normalization, HVG selection, clustering, UMAP, 
     cell cycle scoring, differential expression, and gene scoring.
-    
-    WARNING: THIS RULE IS IN DEVELOPMENT AND NOT READY FOR USE
-    The standard_analyses.py script and related functionality 
-    are still being tested and may not work correctly. Do not use this rule
-    for production analysis yet.
     """
     input:
         combined=f"{RESULTS}/{config['combined_sublibraries']['output_dir']}/combined_{{source}}_{{processing}}.h5ad",
@@ -229,8 +209,8 @@ rule pseudobulk_tmm:
         gene_metadata=f"{RESULTS}/pseudobulk/{{source}}_{{processing}}/pseudobulk_gene_metadata.tsv"
     params:
         output_dir=f"{RESULTS}/pseudobulk/{{source}}_{{processing}}",
-        groupby_cols=lambda wildcards: ' '.join(config.get('pseudobulk', {}).get('groupby_cols', ['biological_sample'])),
-        covariate_cols=lambda wildcards: ' '.join(config.get('pseudobulk', {}).get('covariate_cols', ['pct_counts_mt', 'total_counts'])),
+        groupby_cols=lambda wildcards: ' '.join(config['pseudobulk']['groupby_cols']),
+        covariate_cols=lambda wildcards: ' '.join(config['pseudobulk']['covariate_cols']),
         output_prefix="pseudobulk"
     wildcard_constraints:
         source="main|undetermined|all",
@@ -261,6 +241,75 @@ rule pseudobulk_tmm:
         ml purge 2>/dev/null || true
         
         echo "Pseudobulk analysis complete. Results in {params.output_dir}" | tee -a {log}
+        """
+
+
+# =============================================================================
+# DIFFERENTIAL EXPRESSION ANALYSIS
+# =============================================================================
+rule differential_expression:
+    """Perform differential expression analysis using edgeR on pseudobulk data
+    
+    WARNING: This rule is UNTESTED and may need adjustments for your data.
+    
+    Takes the TMM-normalized pseudobulk counts and performs pairwise DE analysis
+    for specified contrasts. Generates comprehensive results tables and 
+    publication-ready visualizations including volcano plots and MA plots.
+    
+    Outputs are organized following the existing pipeline structure with data
+    and plots subdirectories.
+    """
+    input:
+        raw_counts=f"{RESULTS}/pseudobulk/{{source}}_{{processing}}/pseudobulk_raw_counts.tsv",
+        norm_factors=f"{RESULTS}/pseudobulk/{{source}}_{{processing}}/pseudobulk_norm_factors.tsv",
+        group_metadata=f"{RESULTS}/pseudobulk/{{source}}_{{processing}}/pseudobulk_group_metadata.tsv",
+        script="scripts/run_edger_de_with_plots.R"
+    output:
+        complete=f"{RESULTS}/differential_expression/{{source}}_{{processing}}/analysis.complete"
+    params:
+        output_dir=f"{RESULTS}/differential_expression/{{source}}_{{processing}}",
+        contrasts=lambda wildcards: ','.join(config['differential_expression']['contrasts']),
+        fdr_threshold=lambda wildcards: config['differential_expression']['fdr_threshold'],
+        logfc_threshold=lambda wildcards: config['differential_expression']['logfc_threshold'],
+        group_column=lambda wildcards: config['differential_expression']['group_column'],
+        design_formula=lambda wildcards: config['differential_expression']['design_formula'],
+        plot_dir=f"{RESULTS}/downstream_report/plots"
+    wildcard_constraints:
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    log:
+        f"{LOGS}/differential_expression_{{source}}_{{processing}}.log"
+    threads: 2
+    resources:
+        mem_mb=16000  # 16GB for DE analysis and plotting
+    shell:
+        """
+        # Load R module
+        ml R/4.4 2>/dev/null || echo "R module not loaded - using system R"
+        
+        # Run differential expression analysis with plots
+        Rscript {input.script} \
+            --counts {input.raw_counts} \
+            --norm-factors {input.norm_factors} \
+            --metadata {input.group_metadata} \
+            --output-dir {params.output_dir} \
+            --contrasts {params.contrasts} \
+            --fdr-threshold {params.fdr_threshold} \
+            --logfc-threshold {params.logfc_threshold} \
+            --group-column {params.group_column} \
+            --design-formula "{params.design_formula}" \
+            --plot-dir {params.plot_dir} \
+            --source {wildcards.source} \
+            --processing {wildcards.processing} \
+            &> {log}
+        
+        # Create completion marker
+        touch {output.complete}
+        
+        # Unload R module
+        ml purge 2>/dev/null || true
+        
+        echo "Differential expression analysis complete. Results in {params.output_dir}" | tee -a {log}
         """
 
 

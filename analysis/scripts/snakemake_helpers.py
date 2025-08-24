@@ -411,16 +411,35 @@ def get_downstream_outputs(config, combinations=None, as_dict=False, report_dir=
     
     # Initialize with downstream categories only
     outputs_dict = {
+        'preprocessed': [],
+        'pseudobulk': [],
         'umap': [],
-        # Future: 'clustering': [], 'de_results': [], etc.
+        'differential_expression': [],
     }
     
-    # Only generate UMAP outputs if combined sublibraries are configured
+    # Add preprocessed files and UMAPs if combined sublibraries are configured
     if 'combined_sublibraries' in config:
         for source, processing in combinations:
-            # Add both the directory and the completion marker
+            # Preprocessed h5ad files
+            outputs_dict['preprocessed'].append(
+                f"{get_results_path(config=config)}/{config['combined_sublibraries']['output_dir']}/preprocessed_{source}_{processing}.h5ad"
+            )
+            # UMAP plots
             outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}")
             outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}.complete")
+    
+    # Add pseudobulk outputs
+    for source, processing in combinations:
+        outputs_dict['pseudobulk'].append(
+            f"{get_results_path(config=config)}/pseudobulk/{source}_{processing}/pseudobulk_tmm_cpm.tsv"
+        )
+    
+    # Add differential expression outputs if configured
+    if 'differential_expression' in config and 'contrasts' in config['differential_expression']:
+        for source, processing in combinations:
+            outputs_dict['differential_expression'].append(
+                f"{get_results_path(config=config)}/differential_expression/{source}_{processing}/analysis.complete"
+            )
     
     if as_dict:
         return outputs_dict
