@@ -18,6 +18,7 @@ logs_*/
 # External software/repos
 analysis/bustools/
 analysis/kb_python/
+analysis/kite_references/
 
 # Specific large files
 find_large_files.sh

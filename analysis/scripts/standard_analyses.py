@@ -19,6 +19,7 @@ import scanpy as sc
 import pandas as pd
 import numpy as np
 import scipy
+import scipy.sparse as sp
 import matplotlib.pyplot as plt
 import gc
 # Removed gffutils import - gene annotations done in sublibrary_annotation
@@ -94,7 +95,7 @@ def load_and_filter_data(input_file):
     log_print("✨ Using combined format from combine_sublibraries")
     
     # Verify required annotations are present from sublibrary_annotation
-    required_obs = ['biological_sample', 'pct_counts_mt', 'guides_per_cell', 'guide_umi_counts']
+    required_obs = ['biological_sample', 'pct_counts_mt', 'guide_umi_counts']
     missing_obs = [col for col in required_obs if col not in adata.obs.columns]
     if missing_obs:
         log_print(f"⚠️ WARNING: Missing required obs columns: {missing_obs}")
@@ -104,6 +105,8 @@ def load_and_filter_data(input_file):
     # Verify gene annotations are present
     if 'gene' not in adata.var.columns:
         log_print("⚠️ WARNING: Gene symbols missing - some analysis may not work")
+    
+    # Layers are already deleted in combine_sublibraries to save memory
     
     # Cell filtering now happens at sublibrary combination level
     # No additional filtering applied here
@@ -196,7 +199,14 @@ def apply_subset_filters(adata, subset_configs, min_cells=0):
 
 
 def target_gene_strategy(adata, group_def, cutoff, non_targeting_strings):
-    """Strategy for target gene groupings: target_genes vs non_targeting"""
+    """Strategy for target gene groupings: target_genes vs non_targeting
+    
+    Args:
+        adata: AnnData object
+        group_def: Gene or list of genes to analyze
+        cutoff: Either an integer threshold or a column name in adata.obs for per-cell thresholds
+        non_targeting_strings: List of strings that identify non-targeting guides
+    """
     # Get guide names and counts from obsm
     guide_names = adata.uns["guide_names"]
     guide_counts = adata.obsm["guide_counts"]
@@ -207,22 +217,52 @@ def target_gene_strategy(adata, group_def, cutoff, non_targeting_strings):
     guide_names_clean = [x.replace("+", ".").replace("-", ".") for x in guide_names]
     guide_df = pd.DataFrame(guide_counts, columns=guide_names_clean, index=adata.obs.index)
 
+    # Determine if using per-cell thresholds
+    if isinstance(cutoff, str) and cutoff in adata.obs.columns:
+        # Per-cell thresholds from GMM
+        cutoff_values = adata.obs[cutoff].values
+        # Create boolean masks using broadcasting
+        # For each guide column, compare with per-cell thresholds
+        def check_guides_per_cell(guide_cols):
+            if not guide_cols:
+                return pd.Series([False] * len(adata), index=adata.obs.index)
+            # Vectorized approach for per-cell thresholds
+            valid_mask = cutoff_values > 0  # Cells with valid thresholds
+            result = np.zeros(len(adata), dtype=bool)
+            
+            if valid_mask.any():
+                # Create threshold matrix for broadcasting
+                guide_data = guide_df[guide_cols].values
+                threshold_matrix = cutoff_values[:, np.newaxis]
+                
+                # Check if any guide exceeds threshold for each cell
+                comparison = guide_data >= threshold_matrix
+                result = np.where(valid_mask, comparison.any(axis=1), False)
+            
+            return pd.Series(result, index=adata.obs.index)
+    else:
+        # Fixed threshold for all cells
+        def check_guides_per_cell(guide_cols):
+            if not guide_cols:
+                return pd.Series([False] * len(adata), index=adata.obs.index)
+            return (guide_df[guide_cols] >= cutoff).sum(axis=1) >= 1
+
     # Find non-targeting controls
     nt_cols = [x for x in guide_names_clean if any(nt_str in x for nt_str in non_targeting_strings)]
-    NT = (guide_df[nt_cols] >= cutoff).sum(axis=1) >= 1 if nt_cols else pd.Series([False] * len(adata), index=adata.obs.index)
+    NT = check_guides_per_cell(nt_cols)
 
     # Handle single gene or gene combination
     if isinstance(group_def, str):
         gene = group_def
         gene_cols = [x for x in guide_names_clean if gene in x and not any(nt_str in x for nt_str in non_targeting_strings)]
-        target_mask = (guide_df[gene_cols] >= cutoff).sum(axis=1) >= 1 if gene_cols else pd.Series([False] * len(adata), index=adata.obs.index)
+        target_mask = check_guides_per_cell(gene_cols)
         group_name = f"{gene}_category"
     else:
         genes = group_def
         target_masks = []
         for gene in genes:
             gene_cols = [x for x in guide_names_clean if gene in x and not any(nt_str in x for nt_str in non_targeting_strings)]
-            mask = (guide_df[gene_cols] >= cutoff).sum(axis=1) >= 1 if gene_cols else pd.Series([False] * len(adata), index=adata.obs.index)
+            mask = check_guides_per_cell(gene_cols)
             target_masks.append(mask)
         target_mask = np.logical_or.reduce(target_masks) if target_masks else np.array([False] * len(adata.obs))
         group_name = f"{'_'.join(genes)}_category"
@@ -632,24 +672,22 @@ def calculate_subset_umaps(adata_hvg, subset_configs, use_gpu, n_neighbors, n_pc
 # - Better memory management and parallelization
 
 
-def prepare_final_dataset(adata, final_output_file):
-    """Prepare final dataset for downstream analysis."""
+def save_analysis_results(adata, final_output_file):
+    """Save analysis results after removing large memory items."""
 
-    log_print("🧬 Preparing final dataset")
+    log_print("🧬 Preparing to save analysis results")
 
-    # Use the current data (already has total counts in X and all analysis)
+    # Make a copy to modify
     adata_final = adata.copy()
-
-    # X contains raw counts from combine_sublibraries
-    log_print("✅ Using raw counts in X from combine_sublibraries")
-
-    # Add metadata describing the data structure
-    adata_final.uns["data_description"] = {
-        "X_contains": "raw total RNA counts",
-        "normalization": "Analysis performed on normalized subsets (target_sum=1e4 + log1p), but X contains raw counts",
-        "data_type": "single-cell perturbation experiment",
-        "created_by": "standard_analyses.py prepare_final_dataset()"
-    }
+    
+    # Delete the major memory hogs
+    adata_final.X = None  # Remove expression matrix - not needed for analysis results
+    log_print("🧹 Removed X matrix from output")
+    
+    # Remove guide_counts if it still exists (should already be deleted)
+    if 'guide_counts' in adata_final.obsm:
+        del adata_final.obsm['guide_counts']
+        log_print("🧹 Removed guide_counts from output")
 
     # Remove .raw if it exists
     adata_final.raw = None
@@ -725,6 +763,12 @@ def main(cutoff, input_file, outdir, final_output_file,
         adata_hvg, adata_expressed = normalize_and_preprocess(adata, use_gpu=gpu_enabled)
         log_print(f"📊 Working with HVG subset: {adata_hvg.shape}")
         log_print(f"📊 Working with expressed subset: {adata_expressed.shape}")
+        
+        # Delete the original full dataset to free memory - we only need the subsets
+        original_shape = adata.shape
+        del adata
+        gc.collect()
+        log_print(f"🧹 Deleted original dataset ({original_shape[0]} cells × {original_shape[1]} genes) to save memory")
 
         # Clean GPU memory after preprocessing
         if gpu_enabled:
@@ -789,13 +833,36 @@ def main(cutoff, input_file, outdir, final_output_file,
         if gpu_enabled:
             cleanup_gpu_memory()
 
-        # Verify guide counts are already calculated from sublibrary_annotation
-        if 'guides_per_cell' not in adata_expressed.obs:
-            raise RuntimeError("CRITICAL: guides_per_cell not found. Should be calculated in sublibrary_annotation.py")
+        # Calculate guide counts using the proper cutoff
+        if 'guide_counts' not in adata_expressed.obsm:
+            raise ValueError("No guide_counts found in adata.obsm - this is required for analysis")
         
-        # Use existing guide counts (rename for consistency)
-        adata_expressed.obs['n_guides_total'] = adata_expressed.obs['guides_per_cell']
-        log_print(f"📊 Using existing guide counts: mean = {adata_expressed.obs['n_guides_total'].mean():.2f}")
+        guide_counts = adata_expressed.obsm['guide_counts']
+        
+        # Import the function from guide_analysis
+        from guide_analysis import create_binary_guide_assignment
+        
+        # Use the cutoff that was determined earlier (either fixed or GMM-based)
+        if isinstance(cutoff, str) and cutoff in adata_expressed.obs.columns:
+            # Per-cell thresholds from GMM
+            cutoff_values = adata_expressed.obs[cutoff].values
+            
+            # Create binary guide assignment matrix
+            binary_guides = create_binary_guide_assignment(guide_counts, cutoff_values)
+            
+            # Count guides per cell
+            n_guides = np.array(binary_guides.sum(axis=1)).flatten()
+            
+            # Set to 0 for cells with invalid thresholds
+            n_guides[cutoff_values <= 0] = 0
+            
+            adata_expressed.obs['n_guides_total'] = n_guides
+            log_print(f"📊 Calculated guide counts using {cutoff}: mean = {adata_expressed.obs['n_guides_total'].mean():.2f}")
+        else:
+            # Fixed threshold for all cells
+            binary_guides = create_binary_guide_assignment(guide_counts, cutoff)
+            adata_expressed.obs['n_guides_total'] = np.array(binary_guides.sum(axis=1)).flatten()
+            log_print(f"📊 Calculated guide counts (>= {cutoff} UMIs): mean = {adata_expressed.obs['n_guides_total'].mean():.2f}")
 
         # Configure unified scoring system
         scoring_config = {}
@@ -846,98 +913,48 @@ def main(cutoff, input_file, outdir, final_output_file,
         nt_strings = non_targeting_strings if non_targeting_strings else []
         adata_expressed = calculate_unified_scores(adata_expressed, scoring_config, use_gpu=gpu_enabled, cutoff=cutoff, non_targeting_strings=nt_strings, de_analysis_subsets=de_analysis_subsets)
 
+        # Delete guide_counts from obsm after scoring - it's large and no longer needed
+        if 'guide_counts' in adata_expressed.obsm:
+            guide_shape = adata_expressed.obsm['guide_counts'].shape
+            del adata_expressed.obsm['guide_counts']
+            log_print(f"🧹 Deleted guide_counts matrix ({guide_shape[0]} cells × {guide_shape[1]} guides) to save memory")
+            gc.collect()
+        
         # Clean GPU memory after unified scoring
         if gpu_enabled:
             cleanup_gpu_memory()
 
-        # Transfer analysis results directly from expressed dataset to full dataset
-        log_print("🔄 Transferring analysis results from expressed dataset to full dataset...")
-
-        # Transfer ALL obs columns from expressed dataset (only if they don't exist)
-        obs_transferred = 0
-        obs_skipped = 0
-        for col in adata_expressed.obs.columns:
-            if col not in adata.obs.columns:
-                adata.obs[col] = adata_expressed.obs[col]
-                log_print(f"  Transferred obs column: {col}")
-                obs_transferred += 1
-            else:
-                log_print(f"  Skipped obs column: {col} (already exists in full dataset)")
-                obs_skipped += 1
-
-        # Transfer ALL obs columns from HVG dataset (clustering, etc.)
-        for col in adata_hvg.obs.columns:
-            if col not in adata.obs.columns:
-                adata.obs[col] = adata_hvg.obs[col]
-                log_print(f"  Transferred obs column from HVG: {col}")
-                obs_transferred += 1
-            else:
-                log_print(f"  Skipped obs column from HVG: {col} (already exists in full dataset)")
-                obs_skipped += 1
-
-        # Transfer ALL obsm keys from HVG (PCA, UMAP, etc.)
-        obsm_transferred = 0
-        obsm_skipped = 0
-        for key in adata_hvg.obsm.keys():
-            if key not in adata.obsm:
-                adata.obsm[key] = adata_hvg.obsm[key]
-                log_print(f"  Transferred obsm key: {key}")
-                obsm_transferred += 1
-            else:
-                log_print(f"  Skipped obsm key: {key} (already exists in full dataset)")
-                obsm_skipped += 1
-
-        # Transfer ALL uns keys from expressed dataset (DE results, scoring metadata, etc.)
-        uns_transferred = 0
-        uns_skipped = 0
-        for key in adata_expressed.uns.keys():
-            if key not in adata.uns:
-                adata.uns[key] = adata_expressed.uns[key]
-                log_print(f"  Transferred uns key: {key}")
-                uns_transferred += 1
-            else:
-                log_print(f"  Skipped uns key: {key} (already exists in full dataset)")
-                uns_skipped += 1
-
-        # Transfer ALL uns keys from HVG dataset
-        for key in adata_hvg.uns.keys():
-            if key not in adata.uns:
-                adata.uns[key] = adata_hvg.uns[key]
-                log_print(f"  Transferred uns key from HVG: {key}")
-                uns_transferred += 1
-            else:
-                log_print(f"  Skipped uns key from HVG: {key} (already exists in full dataset)")
-                uns_skipped += 1
-
-        # Transfer ALL obs columns to HVG for UMAP plotting
-        log_print("🔄 Transferring all analysis results to HVG dataset for UMAP plotting...")
-        for col in adata.obs.columns:
-            if col not in adata_hvg.obs.columns:
-                adata_hvg.obs[col] = adata.obs[col]
+        # Consolidate results from both subsets
+        log_print("🔄 Consolidating analysis results from expressed and HVG datasets...")
         
-        # Transfer ALL uns keys to HVG for UMAP plotting
-        for key in adata.uns.keys():
-            if key not in adata_hvg.uns:
-                adata_hvg.uns[key] = adata.uns[key]
+        # Use expressed as base (has all genes' var info and DE/scoring results)
+        # Transfer dimensionality reductions from HVG to expressed
+        for key in adata_hvg.obsm.keys():
+            adata_expressed.obsm[key] = adata_hvg.obsm[key]
+            log_print(f"  Transferred {key} from HVG dataset")
+        
+        # Transfer clustering results from HVG to expressed
+        for col in adata_hvg.obs.columns:
+            if col.startswith(('leiden', 'clusters')):
+                adata_expressed.obs[col] = adata_hvg.obs[col]
+                log_print(f"  Transferred {col} from HVG dataset")
+        
+        # Transfer uns entries from HVG (PCA, UMAP, neighbors params)
+        for key in adata_hvg.uns.keys():
+            if key not in adata_expressed.uns:
+                adata_expressed.uns[key] = adata_hvg.uns[key]
+        
+        # Delete HVG dataset - no longer needed
+        del adata_hvg
+        gc.collect()
+        log_print("🧹 Deleted HVG dataset to save memory")
+        
+        # adata_expressed now has everything - use it as the final result
+        adata_final = adata_expressed
+        log_print(f"✅ Consolidated results ready: {adata_final.shape} (all expressed genes retained)")
 
-        # Delete layers from HVG dataset (not needed for UMAP plotting)
-        if adata_hvg.layers:
-            for layer in list(adata_hvg.layers.keys()):
-                del adata_hvg.layers[layer]
-            log_print("🧹 Deleted layers from HVG dataset")
-
-        # UMAP plotting moved to separate rule for dashboard integration
-        log_print("🎨 UMAP plotting will be done by plot_standard_analyses_umap rule for dashboard integration")
-
-        log_print(f"📊 Transfer summary - obs: {obs_transferred} transferred, {obs_skipped} skipped")
-        log_print(f"📊 Transfer summary - obsm: {obsm_transferred} transferred, {obsm_skipped} skipped") 
-        log_print(f"📊 Transfer summary - uns: {uns_transferred} transferred, {uns_skipped} skipped")
-
-        log_print(f"✅ All analysis results transferred to full dataset: {adata.shape}")
-        adata_full = adata
-
-        # Prepare final dataset using full gene set (this will delete the raw count layers)
-        adata_final = prepare_final_dataset(adata_full, final_output_file)
+        # Save analysis results (delete X matrix to save space)
+        adata_final = save_analysis_results(adata_final, final_output_file)
 
         log_print(f"✅ Processing complete! Final output saved to: {final_output_file}")
         return adata_final
@@ -975,9 +992,40 @@ if __name__ == "__main__":
     if os.path.exists(args.final_output_file):
         log_print(f"🔄 Final output file {args.final_output_file} exists - regenerating as requested by Snakemake...")
 
+    # Load the input data first to check for GMM thresholds
+    log_print(f"Loading input data from {args.input_file}...")
+    adata = sc.read_h5ad(args.input_file)
+    
+    # Get guide calling metadata from uns
+    guide_metadata = adata.uns['guide_calling_metadata']
+    log_print(f"Guide calling method: {guide_metadata['method']} at {guide_metadata['granularity']} level")
+    
+    # Determine the cutoff to use
+    if guide_metadata['method'] == 'fixed':
+        # Fixed threshold for all cells
+        cutoff = guide_metadata['threshold']
+        log_print(f"Using fixed guide threshold: {cutoff}")
+    elif 'guide_threshold' in adata.obs.columns:
+        # GMM thresholds - check if uniform or per-cell
+        unique_thresholds = adata.obs['guide_threshold'].unique()
+        unique_thresholds = unique_thresholds[unique_thresholds > 0]  # Exclude -1 (missing values)
+        
+        if len(unique_thresholds) == 1:
+            # Sample-level: all cells have the same threshold
+            cutoff = int(unique_thresholds[0])
+            log_print(f"Using guide threshold: {cutoff} (uniform across all cells)")
+        else:
+            # Biosample-level: per-cell thresholds
+            cutoff = 'guide_threshold'  # Pass the column name for per-cell assignment
+            log_print(f"Using guide thresholds: per-cell values from guide_threshold column")
+            log_print(f"  Unique thresholds: {sorted(unique_thresholds)}")
+    else:
+        # Should not happen - combine_sublibraries should have set this up
+        raise ValueError(f"Expected guide_threshold column or fixed threshold in metadata")
+    
     # Run the pipeline - get all parameters from config
     adata_final = main(
-        cutoff=standard_analyses_config.get('guide_assignment_cutoff', 5),
+        cutoff=cutoff,
         input_file=args.input_file,
         outdir=args.outdir,
         final_output_file=args.final_output_file,

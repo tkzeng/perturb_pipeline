@@ -33,7 +33,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline_utils import (
     log_print, 
-    add_comprehensive_gene_annotations,
+    add_comprehensive_gene_annotations_fast,
     add_mitochondrial_metrics,
     map_cells_to_samples_with_plate,
     filter_guides_by_reference,
@@ -108,11 +108,13 @@ def filter_and_prepare_guide(adata, sample_id, gex_barcodes):
     
     log_print(f"   Using {len(gex_barcodes)} barcodes from paired GEX")
     
-    # Align to cells present in GEX sample
-    common_barcodes = [bc for bc in gex_barcodes if bc in adata.obs.index]
+    # Fully vectorized intersection using pandas isin()
+    # This creates a boolean mask for barcodes that exist in adata
+    mask = pd.Index(gex_barcodes).isin(adata.obs.index)
+    common_barcodes = pd.Index(gex_barcodes)[mask]
     log_print(f"   Found {len(common_barcodes)} common barcodes between GEX and guide")
     
-    # Prepare adata
+    # Prepare adata using the common barcodes directly
     adata_filtered = adata[common_barcodes, :].copy()
     log_print(f"   Prepared: {adata_filtered.shape[0]} cells x {adata_filtered.shape[1]} guides")
     
@@ -223,46 +225,31 @@ def generate_qc_plots(adata, output_pdf, prefix=""):
         plt.close()
 
 
-def add_guide_statistics(adata, cutoff=5):
-    """Add guide statistics to the combined data.
+def add_guide_statistics(adata):
+    """Add basic guide statistics to the combined data.
     
     Args:
         adata: Combined AnnData with guide_counts in obsm
-        cutoff: UMI cutoff for guide assignment
     """
     if "guide_counts" not in adata.obsm:
-        log_print("⚠️  No guide_counts found in obsm, skipping guide statistics")
-        return
+        raise ValueError("No guide_counts found in obsm - this is required")
     
     guide_matrix = adata.obsm["guide_counts"]
     
     # Calculate guide statistics using sparse operations
     log_print("📊 Calculating guide statistics...")
     
-    # For sparse matrices, use efficient operations
+    # Only calculate total UMI counts per cell (no thresholding)
     if scipy.sparse.issparse(guide_matrix):
         log_print(f"   Processing sparse guide matrix...")
-        # Count guides per cell (guides >= cutoff)
-        guide_binary = (guide_matrix >= cutoff).astype(np.int8)
-        log_print(f"   guide_binary sparsity: {scipy.sparse.issparse(guide_binary)}, type: {type(guide_binary)}")
-        adata.obs["guides_per_cell"] = np.array(guide_binary.sum(axis=1)).flatten()
-        
         # Sum UMI counts per cell
         adata.obs["guide_umi_counts"] = np.array(guide_matrix.sum(axis=1)).flatten()
-        
-        # Store binary guide assignment matrix as sparse
-        adata.obsm["guide_assignment"] = guide_binary
     else:
         # Handle dense matrices (though this should rarely happen)
-        adata.obs["guides_per_cell"] = (guide_matrix >= cutoff).sum(axis=1)
         adata.obs["guide_umi_counts"] = guide_matrix.sum(axis=1)
-        adata.obsm["guide_assignment"] = scipy.sparse.csr_matrix(
-            (guide_matrix >= cutoff).astype(np.int8)
-        )
     
-    log_print(f"✅ Guide statistics calculated: {adata.shape[0]} cells")
-    log_print(f"   Mean guides per cell: {adata.obs['guides_per_cell'].mean():.2f}")
-    log_print(f"   % cells with guides: {(adata.obs['guides_per_cell'] > 0).mean() * 100:.1f}%")
+    log_print(f"✅ Guide UMI statistics calculated: {adata.shape[0]} cells")
+    log_print(f"   Mean guide UMIs per cell: {adata.obs['guide_umi_counts'].mean():.2f}")
 
 
 def main():
@@ -273,8 +260,6 @@ def main():
     parser.add_argument("--guide-kb-dir", required=True, help="Path to guide kallisto output directory")
     parser.add_argument("--output-dir", required=True, help="Output directory for filtered and annotated files")
     # parser.add_argument("--qc-report", required=True, help="Path for QC report PDF")  # TODO: Implement in future
-    parser.add_argument("--cutoff", type=int, default=5,
-                        help="Cutoff for guide assignment")
     parser.add_argument("--config", required=True, 
                         help="Path to config.yaml file")
     parser.add_argument("--sample-id", required=True,
@@ -285,6 +270,8 @@ def main():
                         help="Data source (main, undetermined, or all)")
     parser.add_argument("--processing", required=True, choices=["raw", "trimmed", "recovered", "merged"],
                         help="Processing state (raw, trimmed, recovered, or merged)")
+    parser.add_argument("--gene-annotation-table", required=True,
+                        help="Path to pre-computed gene annotation table (TSV format)")
 
     args = parser.parse_args()
 
@@ -312,11 +299,6 @@ def main():
     
     # Cell filtering parameters
     min_umi_filter = config['sublibrary_filtering']['min_umi_filter']
-    
-    # Gene annotation reference files
-    ribosomal_genes_path = config['input_paths']['ribosomal_genes']
-    gene_database_path = config['input_paths']['gene_database']
-    cell_cycle_genes_path = config['input_paths']['cell_cycle_genes']
     
     # Barcode file for validation
     parsebio_barcodes_path = config['input_paths']['parsebio_barcodes']
@@ -364,8 +346,16 @@ def main():
         log_print(f"   Loaded {adata_gex.shape[0]} cells x {adata_gex.shape[1]} genes")
         log_print(f"   GEX layers sparsity - mature: {scipy.sparse.issparse(adata_gex.layers['mature'])}, nascent: {scipy.sparse.issparse(adata_gex.layers['nascent'])}, ambiguous: {scipy.sparse.issparse(adata_gex.layers['ambiguous'])}")
         
+        # ASSERTION: Check that we have proper barcode names, not numeric indices
+        assert not str(adata_gex.obs_names[0]).isdigit(), f"ERROR: GEX barcodes are numeric! First barcode: {adata_gex.obs_names[0]}"
+        log_print(f"   ✓ Barcode check passed - example: {adata_gex.obs_names[0]}")
+        
         # Prepare using the expected cells we extracted above
         adata_gex = filter_and_prepare_gex(adata_gex, args.sample_id, expected_cells, min_umi_filter)
+        
+        # ASSERTION: Check barcodes are still valid after filtering
+        assert not str(adata_gex.obs_names[0]).isdigit(), f"ERROR: Barcodes became numeric after filter_and_prepare_gex! First: {adata_gex.obs_names[0]}"
+        
         gc.collect()  # Clean up after preparation
         
         # 2. LOAD AND PREPARE GUIDE DATA
@@ -385,8 +375,11 @@ def main():
         log_print("\n🔗 3. COMBINING GEX AND GUIDE DATA...")
         adata = add_guide_data(adata_gex, adata_guide)
         
+        # ASSERTION: Check barcodes after combining
+        assert not str(adata.obs_names[0]).isdigit(), f"ERROR: Barcodes became numeric after add_guide_data! First: {adata.obs_names[0]}"
+        
         # Add guide statistics
-        add_guide_statistics(adata, cutoff=args.cutoff)
+        add_guide_statistics(adata)
         
         # Clean up separate objects after combining
         del adata_gex, adata_guide
@@ -394,7 +387,7 @@ def main():
 
         # 4. GENE ANNOTATION
         log_print("\n🏷️  4. ADDING GENE ANNOTATIONS...")
-        add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path)
+        add_comprehensive_gene_annotations_fast(adata, args.gene_annotation_table)
 
         # 5. QC METRICS
         log_print("\n📊 5. CALCULATING QC METRICS...")
@@ -415,12 +408,19 @@ def main():
             if not plate_maps_file:
                 raise ValueError("plate_maps_file must be specified in config for plate mapping")
             map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, parsebio_barcodes)
+            
+            # ASSERTION: Check barcodes after plate mapping
+            assert not str(adata.obs_names[0]).isdigit(), f"ERROR: Barcodes became numeric after map_cells_to_samples_with_plate! First: {adata.obs_names[0]}"
         
         # Process guide assignments (currently a stub function)
         # filter_guides_by_reference(adata)  # Skip - not needed for this pipeline
 
         # 7. SAVE OUTPUTS
         log_print("\n💾 7. SAVING OUTPUTS...")
+        
+        # FINAL ASSERTION: Check barcodes before saving
+        assert not str(adata.obs_names[0]).isdigit(), f"ERROR: Barcodes are numeric before saving! First: {adata.obs_names[0]}"
+        log_print(f"   ✓ Final barcode check passed - example: {adata.obs_names[0]}")
         
         # Create output directory
         output_path = Path(args.output_dir)

@@ -112,6 +112,14 @@ The pipeline requires a custom version of kb_python with collision detection for
 - R 4.4 with DropletUtils (latest from GitHub, for distance-based knee/inflection detection)
 - Standard tools: kallisto, bustools, samtools, etc.
 
+**Optional dependencies (not installed by default):**
+- **edgeR (for pseudobulk analysis only):** If you enable pseudobulk analysis (`pseudobulk.enabled: true` in config), you'll need to install edgeR:
+  ```bash
+  # Install in your conda environment
+  conda install bioconda::bioconductor-edger
+  ```
+  Note: This is only required for the `pseudobulk_tmm` rule in `downstream.smk`. The main pipeline runs without it.
+
 To verify the installation worked correctly:
 ```bash
 python -c "import kb_python.ref; print('remove_collisions' in dir(kb_python.ref))"

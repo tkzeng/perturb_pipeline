@@ -2,7 +2,7 @@
 analysis_name: "yann_k562_analysis"
 sample_info_file: "references_yann_k562/sample_info.k562_yann.xlsx"
 plate_maps_file: "references_yann_k562/plate_map.xlsx"
-guide_file: "references_yann_k562/k562_yann_guides.txt"
+guide_file: "references_yann_k562/k562_yann_guides.fixed.txt/"
 
 # Sample selection (leave empty to process all samples in sample_info_file)
 sample_ids: []
@@ -79,25 +79,39 @@ input_paths:
 cell_calling:
   # Methods to run (comment out any methods you want to skip)
   # Available methods: Expected_Cells, UMI_Threshold, BarcodeRanks_Knee, BarcodeRanks_Inflection
+  # If using Expected_Cells or UMI_Threshold, you MUST specify expected_cells or min_umi_threshold in sample_info.tsv
   methods_to_run:
-    - Expected_Cells
-    - UMI_Threshold
     - BarcodeRanks_Knee
     - BarcodeRanks_Inflection
   
   # Default method to use for saturation analysis and other downstream analyses
   default_method: "BarcodeRanks_Knee"
   
-  # Default parameters (will be overridden by sample_info.tsv values)
-  defaults:
-    expected_cells: 5000
-    min_umi_threshold: 100
-    saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
+  # Saturation points for saturation analysis
+  saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
 
 # Barcode recovery parameters
 barcode_recovery:
   max_reads_recovery: null  # null = process all reads
   max_shift: 4
+
+# Guide mixture model analysis parameters
+guide_mixture_model:
+  min_umi_threshold: 2  # Filter guides with < this many UMIs (1=filter only 0s, 2=filter 0s and 1s)
+  
+# Pseudobulk analysis parameters
+pseudobulk:
+  groupby_cols:  # Columns to group cells by for pseudobulking
+    - biological_sample
+    # Add more grouping variables as needed, e.g.:
+    # - perturbation
+    # - timepoint
+    # - leiden
+  covariate_cols:  # Covariates to aggregate (mean, median, std)
+    - pct_counts_mt
+    - total_counts
+    - n_genes_by_counts
+    # Add more covariates as needed
 
 # Undetermined recovery parameters
 undetermined_recovery:
@@ -105,11 +119,12 @@ undetermined_recovery:
 
 # QC analysis parameters
 qc_analysis:
-  guide_cutoffs: [1, 2, 3, 4, 5]
+  guide_cutoffs: [2, "gmm_50", "gmm_75"]
+  default_guide_cutoff: "gmm_50"  # Default guide cutoff to use for analyses
+  default_granularity: "biosample"  # Default granularity for GMM thresholds: "sample" or "biosample"
 
 # Sublibrary filtering parameters
 sublibrary_filtering:
-  guide_assignment_cutoff: 5
   min_umi_filter: 100
 
 
@@ -141,9 +156,6 @@ combination:
 
 # Combined sublibraries configuration
 combined_sublibraries:
-  # Cell calling method to use for creating combined sublibrary files
-  # Options: Expected_Cells, UMI_Threshold, BarcodeRanks_Knee, BarcodeRanks_Inflection
-  cell_calling_method: "Expected_Cells"
   # Output directory for combined sublibrary files (relative to results_base)
   output_dir: "combined_sublibraries"
   # Pools to include (empty list means all pools)
@@ -154,7 +166,6 @@ standard_analyses:
   target_genes: []  # Empty list for no target gene analysis, or ["TP53", "CDKN1A"] for specific genes
   use_gpu: false  # Use GPU acceleration (requires RAPIDS)
   target_clusters: 3  # Target number of clusters for leiden clustering
-  guide_assignment_cutoff: 5  # Threshold for guide assignment in target gene analysis
   n_hvgs: 2000  # Number of highly variable genes
   clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
   n_neighbors: 15  # Number of neighbors for UMAP calculation
@@ -163,9 +174,9 @@ standard_analyses:
   # Single definition of analysis subsets used for both UMAP and DE
   analysis_subsets:
     - name: "low_mito"
-      filter: "adata.obs['gmm_posterior_prob_compromised'] < 0.75"
+      filter: "adata.obs['posterior_prob_compromised'] < 0.75"
     - name: "high_mito"
-      filter: "adata.obs['gmm_posterior_prob_compromised'] >= 0.75"
+      filter: "adata.obs['posterior_prob_compromised'] >= 0.75"
   
   # Non-targeting guide identifiers
   non_targeting_strings: []  # Empty list for no non-targeting analysis, or ["non-targeting", "non.targeting"]

@@ -275,6 +275,159 @@ def print_sample_summary(config):
 # Output generation functions
 # =============================================================================
 
+def get_preprocessing_outputs(config, combinations=None, as_dict=False, report_dir="preprocessing_report"):
+    """Generate all expected output files for the preprocessing pipeline
+    
+    This function is used by preprocessing.smk to define all outputs:
+    - Read statistics
+    - Cell calling results and plots
+    - QC metrics (sample, biological sample, well, pool)
+    - Saturation analysis data and plots
+    - Consolidated metrics and visualizations
+    
+    Does NOT include:
+    - UMAP plots (handled by downstream.smk)
+    - Final report DONE file (to avoid circular dependency)
+    """
+    if combinations is None:
+        # Get combinations from config (top level)
+        combinations = config['combinations']
+        # Convert list of lists to list of tuples
+        combinations = [tuple(combo) for combo in combinations]
+    
+    # Initialize with preprocessing categories only
+    outputs_dict = {
+        'read_stats': [],
+        'cell_calling': [],
+        'qc_metrics': [],
+        'saturation': [],
+        'consolidated': []
+    }
+    
+    sample_df = load_sample_info(config)
+    
+    # First, iterate through all samples to generate per-sample outputs
+    for _, row in sample_df.iterrows():
+        pool = row['pool']
+        sample_id = row['sample_id']  # e.g., "pool1:gex_1"
+        sample_name = extract_sample(sample_id)  # e.g., "gex_1"
+        sample_type = row['sample_type']
+        
+        for source, processing in combinations:
+            # Read statistics - use sample_id in directories
+            if sample_type == 'gex':
+                outputs_dict['read_stats'].append(
+                    f"{get_results_path(config=config)}/{sample_id}/qc/{sample_id}_all_{source}_{processing}_read_statistics.tsv"
+                )
+            else:  # guide
+                outputs_dict['read_stats'].append(
+                    f"{get_results_path(config=config)}/{sample_id}/qc/{sample_id}_guide_{source}_{processing}_read_statistics.tsv"
+                )
+            
+            # Cell calling and QC metrics for GEX samples only
+            if sample_type == 'gex':
+                # Cell calling outputs - use sample_id for directory structure
+                outputs_dict['cell_calling'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/{source}_{processing}/{sample_id}/cell_calling"
+                )
+                outputs_dict['cell_calling'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/plots/cell_calling/{source}_{processing}/{sample_id}"
+                )
+                outputs_dict['cell_calling'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/plots/cell_calling/{source}_{processing}/{sample_id}.complete"
+                )
+                
+                # QC metrics - all three levels (TSVs serve as sentinels for plot completion)
+                for level in ['by_sample.tsv', 'by_biological_sample.tsv', 'by_well.tsv']:
+                    outputs_dict['qc_metrics'].append(
+                        f"{get_results_path(config=config)}/{report_dir}/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/{level}"
+                    )
+    
+    # Saturation analysis for main/raw only - iterate through samples
+    if ('main', 'raw') in combinations:
+        for _, row in sample_df.iterrows():
+            pool = row['pool']
+            sample_id = row['sample_id']  # e.g., "pool1:gex_1"
+            sample_name = extract_sample(sample_id)  # e.g., "gex_1"
+            sample_type = row['sample_type']
+            
+            if sample_type == 'gex':
+                # GEX saturation - use sample_id for directory structure
+                outputs_dict['saturation'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/main_raw/{sample_id}/saturation/umi_saturation.tsv"
+                )
+                outputs_dict['saturation'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/plots/saturation/main_raw/gex/{sample_id}"
+                )
+            elif sample_type == 'guide':
+                # Guide saturation - use sample_id for directory structure
+                outputs_dict['saturation'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/main_raw/{sample_id}/saturation/guide_umi_saturation.tsv"
+                )
+                outputs_dict['saturation'].append(
+                    f"{get_results_path(config=config)}/{report_dir}/plots/saturation/main_raw/guide/{sample_id}"
+                )
+        
+        # Pool statistics - uses the filtered sample_df so pool1000/1001 are excluded when needed
+        pools = sample_df['pool'].unique()
+        outputs_dict['qc_metrics'].extend(
+            [f"{get_results_path(config=config)}/{report_dir}/data/per_pool/main_raw/{pool}/pool_statistics.tsv"
+             for pool in pools]
+        )
+        outputs_dict['consolidated'].append(f"{get_results_path(config=config)}/{report_dir}/data/consolidated/main_raw/by_pool.tsv")
+    
+    # Consolidated outputs for each combination
+    for source, processing in combinations:
+        outputs_dict['consolidated'].extend([
+            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/all_metrics.tsv",
+            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
+            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/by_well.tsv",
+            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_general/{source}_{processing}",
+            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_cell_based/{source}_{processing}",
+            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_{source}_{processing}.complete"
+        ])
+    
+    if as_dict:
+        return outputs_dict
+    else:
+        return [item for sublist in outputs_dict.values() for item in sublist]
+
+
+def get_downstream_outputs(config, combinations=None, as_dict=False, report_dir="downstream_report"):
+    """Generate all expected output files for the downstream analysis pipeline
+    
+    This function is used by downstream.smk to define all outputs:
+    - UMAP plots from standard analyses
+    - Clustering results (future)
+    - Differential expression results (future)
+    
+    Only generates outputs when combined_sublibraries is configured.
+    """
+    if combinations is None:
+        # Get combinations from config (top level)
+        combinations = config['combinations']
+        # Convert list of lists to list of tuples
+        combinations = [tuple(combo) for combo in combinations]
+    
+    # Initialize with downstream categories only
+    outputs_dict = {
+        'umap': [],
+        # Future: 'clustering': [], 'de_results': [], etc.
+    }
+    
+    # Only generate UMAP outputs if combined sublibraries are configured
+    if 'combined_sublibraries' in config:
+        for source, processing in combinations:
+            # Add both the directory and the completion marker
+            outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}")
+            outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}.complete")
+    
+    if as_dict:
+        return outputs_dict
+    else:
+        return [item for sublist in outputs_dict.values() for item in sublist]
+
+
 def get_all_outputs(config, combinations=None, as_dict=False):
     """Generate all expected output files including QC metrics
     
@@ -310,8 +463,8 @@ def get_all_outputs(config, combinations=None, as_dict=False):
         'qc_metrics': [],
         'saturation': [],
         'consolidated': [],
-        'umap': [],  # UMAP plots from standard analyses
-        'report': [f"{get_results_path(config=config)}/qc_report/DONE.txt"]
+        'umap': []  # UMAP plots from standard analyses
+        # Note: 'report' removed to avoid circular dependency when used in generate_qc_report
     }
     
     # UMAP subsets are now contained within the main umap directory, so no separate categories needed
@@ -340,29 +493,23 @@ def get_all_outputs(config, combinations=None, as_dict=False):
             if sample_type == 'gex':
                 # Cell calling outputs - use sample_id for directory structure
                 outputs_dict['cell_calling'].append(
-                    f"{get_results_path(config=config)}/qc_report/data/per_sample/{source}_{processing}/{sample_id}/cell_calling"
+                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/{source}_{processing}/{sample_id}/cell_calling"
                 )
                 outputs_dict['cell_calling'].append(
-                    f"{get_results_path(config=config)}/qc_report/plots/cell_calling/{source}_{processing}/{sample_id}"
+                    f"{get_results_path(config=config)}/{report_dir}/plots/cell_calling/{source}_{processing}/{sample_id}"
                 )
                 outputs_dict['cell_calling'].append(
-                    f"{get_results_path(config=config)}/qc_report/plots/cell_calling/{source}_{processing}/{sample_id}.complete"
+                    f"{get_results_path(config=config)}/{report_dir}/plots/cell_calling/{source}_{processing}/{sample_id}.complete"
                 )
                 
-                # QC metrics - all three levels
+                # QC metrics - all three levels (TSVs serve as sentinels for plot completion)
                 for level in ['by_sample.tsv', 'by_biological_sample.tsv', 'by_well.tsv']:
                     outputs_dict['qc_metrics'].append(
-                        f"{get_results_path(config=config)}/qc_report/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/{level}"
+                        f"{get_results_path(config=config)}/{report_dir}/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/{level}"
                     )
                 
-                # Per-cell plots
-                outputs_dict['qc_metrics'].append(
-                    f"{get_results_path(config=config)}/qc_report/plots/per_cell/{source}_{processing}/{sample_id}"
-                )
-                # GMM QC plots
-                outputs_dict['qc_metrics'].append(
-                    f"{get_results_path(config=config)}/qc_report/plots/gmm_qc/{source}_{processing}/{sample_id}"
-                )
+                # Note: Per-cell and cell_quality_qc plot directories are created by QC rules but can't be declared as outputs
+                # since multiple rules write to the same directory. The packaging script will discover these directories.
     
     # Saturation analysis for main/raw only - iterate through samples
     if ('main', 'raw') in combinations:
@@ -375,45 +522,45 @@ def get_all_outputs(config, combinations=None, as_dict=False):
             if sample_type == 'gex':
                 # GEX saturation - use sample_id for directory structure
                 outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/qc_report/data/per_sample/main_raw/{sample_id}/saturation/umi_saturation.tsv"
+                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/main_raw/{sample_id}/saturation/umi_saturation.tsv"
                 )
                 outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/qc_report/plots/saturation/main_raw/gex/{sample_id}"
+                    f"{get_results_path(config=config)}/{report_dir}/plots/saturation/main_raw/gex/{sample_id}"
                 )
             elif sample_type == 'guide':
                 # Guide saturation - use sample_id for directory structure
                 outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/qc_report/data/per_sample/main_raw/{sample_id}/saturation/guide_umi_saturation.tsv"
+                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/main_raw/{sample_id}/saturation/guide_umi_saturation.tsv"
                 )
                 outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/qc_report/plots/saturation/main_raw/guide/{sample_id}"
+                    f"{get_results_path(config=config)}/{report_dir}/plots/saturation/main_raw/guide/{sample_id}"
                 )
         
         # Pool statistics - uses the filtered sample_df so pool1000/1001 are excluded when needed
         pools = sample_df['pool'].unique()
         outputs_dict['qc_metrics'].extend(
-            [f"{get_results_path(config=config)}/qc_report/data/per_pool/main_raw/{pool}/pool_statistics.tsv"
+            [f"{get_results_path(config=config)}/{report_dir}/data/per_pool/main_raw/{pool}/pool_statistics.tsv"
              for pool in pools]
         )
-        outputs_dict['consolidated'].append(f"{get_results_path(config=config)}/qc_report/data/consolidated/main_raw/by_pool.tsv")
+        outputs_dict['consolidated'].append(f"{get_results_path(config=config)}/{report_dir}/data/consolidated/main_raw/by_pool.tsv")
     
     # Consolidated outputs for each combination
     for source, processing in combinations:
         outputs_dict['consolidated'].extend([
-            f"{get_results_path(config=config)}/qc_report/data/consolidated/{source}_{processing}/all_metrics.tsv",
-            f"{get_results_path(config=config)}/qc_report/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
-            f"{get_results_path(config=config)}/qc_report/data/consolidated/{source}_{processing}/by_well.tsv",
-            f"{get_results_path(config=config)}/qc_report/plots/consolidated_general/{source}_{processing}",
-            f"{get_results_path(config=config)}/qc_report/plots/consolidated_cell_based/{source}_{processing}",
-            f"{get_results_path(config=config)}/qc_report/plots/consolidated_{source}_{processing}.complete"
+            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/all_metrics.tsv",
+            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
+            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/by_well.tsv",
+            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_general/{source}_{processing}",
+            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_cell_based/{source}_{processing}",
+            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_{source}_{processing}.complete"
         ])
         
         # Add UMAP plots (created by downstream.smk after standard analyses)
         # These are included in the dictionary but only used by generate_final_report
         if 'combined_sublibraries' in config:
             # Add both the directory and the completion marker (like other plot categories)
-            outputs_dict['umap'].append(f"{get_results_path(config=config)}/qc_report/plots/umap/{source}_{processing}")
-            outputs_dict['umap'].append(f"{get_results_path(config=config)}/qc_report/plots/umap/{source}_{processing}.complete")
+            outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}")
+            outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}.complete")
             
             # UMAP subsets are now contained within main umap directory
     

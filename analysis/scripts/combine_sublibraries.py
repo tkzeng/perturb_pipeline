@@ -87,6 +87,13 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_l
     
     log_print(f"Loading {sample_id}...")
     
+    # Delete layers immediately - they're not used in downstream analysis
+    if adata.layers:
+        layer_names = list(adata.layers.keys())
+        log_print(f"  Deleting {len(layer_names)} layers to save memory: {layer_names}")
+        for layer in layer_names:
+            del adata.layers[layer]
+    
     # Load called cell barcodes
     with open(barcode_path) as f:
         called_cells = set(line.strip() for line in f)
@@ -95,30 +102,30 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_l
     adata = adata[adata.obs_names.isin(called_cells)]
     log_print(f"  Cell calling filter {sample_id}: {adata.shape[0]} cells (from {original_cells} total)")
     
-    # Add GMM posterior probabilities (always present after generate_qc_cell_lists runs)
+    # Add cell quality posterior probabilities (always present after generate_qc_cell_lists runs)
     if os.path.exists(cell_lists_path):
         cell_lists_df = pd.read_csv(cell_lists_path, sep='\t')
         
         # Match barcodes and add the probability column
         cell_lists_df = cell_lists_df.set_index('barcode')
         
-        # Add GMM probabilities for cells that exist in both datasets
+        # Add cell quality probabilities for cells that exist in both datasets
         common_barcodes = adata.obs_names.intersection(cell_lists_df.index)
         
         # Initialize column with NaN for all cells
-        adata.obs['gmm_posterior_prob_compromised'] = np.nan
+        adata.obs['posterior_prob_compromised'] = np.nan
         
-        # Fill in values for cells that have GMM probabilities
-        adata.obs.loc[common_barcodes, 'gmm_posterior_prob_compromised'] = \
-            cell_lists_df.loc[common_barcodes, 'gmm_posterior_prob_compromised'].values
+        # Fill in values for cells that have cell quality probabilities
+        adata.obs.loc[common_barcodes, 'posterior_prob_compromised'] = \
+            cell_lists_df.loc[common_barcodes, 'posterior_prob_compromised'].values
         
-        n_with_gmm = (~adata.obs['gmm_posterior_prob_compromised'].isna()).sum()
-        log_print(f"  Added GMM posterior probabilities for {n_with_gmm}/{adata.shape[0]} cells")
+        n_with_gmm = (~adata.obs['posterior_prob_compromised'].isna()).sum()
+        log_print(f"  Added cell quality posterior probabilities for {n_with_gmm}/{adata.shape[0]} cells")
     else:
         log_print(f"  Warning: Cell lists file not found: {cell_lists_path}")
     
-    # Add library prefix to cell names
-    adata.obs_names = [f"{sample_id}_{barcode}" for barcode in adata.obs_names]
+    # Add library prefix to cell names using vectorized string operations
+    adata.obs_names = pd.Index(adata.obs_names).astype(str).map(lambda x: f"{sample_id}_{x}")
     
     # Note: Library metadata (sample_id, pool) already added by sublibrary_annotation.py
     
@@ -129,7 +136,7 @@ def load_and_filter_library(h5ad_path, barcode_path, cell_calling_method, cell_l
 # Output is a single combined h5ad file with both GEX and guide data
 
 
-def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_method, output_file):
+def combine_sublibraries(h5ad_files, barcode_files, filter_files, threshold_tables, cell_calling_method, output_file, config):
     """Main function to combine libraries into a single file
     
     Args:
@@ -138,6 +145,7 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
         filter_files: List of per-sample QC cell list TSV files (with GMM probabilities)
         cell_calling_method: Cell calling method used
         output_file: Output path for combined h5ad file
+        config: Configuration dictionary
     """
     
     log_print("🧬 Combining filtered sublibraries")
@@ -166,8 +174,7 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
                 f"Gene count mismatch: {combined_gex.n_vars} vs {adata.n_vars}"
             assert combined_gex.var_names.equals(adata.var_names), \
                 "Gene names don't match between files"
-            assert set(combined_gex.layers.keys()) == set(adata.layers.keys()), \
-                f"Layer keys mismatch: {set(combined_gex.layers.keys())} vs {set(adata.layers.keys())}"
+            # Layers check removed - we delete layers to save memory
             assert set(combined_gex.obsm.keys()) == set(adata.obsm.keys()), \
                 f"Obsm keys mismatch: {set(combined_gex.obsm.keys())} vs {set(adata.obsm.keys())}"
             
@@ -226,7 +233,7 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
         'cell_calling_method': cell_calling_method,
         'gmm_probabilities_added': True
     }
-    n_with_prob = (~combined_gex.obs['gmm_posterior_prob_compromised'].isna()).sum()
+    n_with_prob = (~combined_gex.obs['posterior_prob_compromised'].isna()).sum()
     log_print(f"📝 Added filtering metadata: cell_calling={cell_calling_method}, GMM probabilities for {n_with_prob}/{combined_gex.n_obs} cells")
     
     # Log biological sample distribution if available
@@ -238,8 +245,63 @@ def combine_sublibraries(h5ad_files, barcode_files, filter_files, cell_calling_m
         if len(sample_counts) > 10:
             log_print(f"  ... and {len(sample_counts) - 10} more samples")
     
-    # Step 3: Save combined file
-    log_print("\n💾 STEP 3: Saving combined output...")
+    # Step 3: Add GMM threshold tables if provided
+    if threshold_tables:
+        log_print("\n📊 STEP 3: Adding GMM threshold tables...")
+        
+        # Read and combine all threshold tables
+        threshold_dfs = []
+        for threshold_file in threshold_tables:
+            if os.path.exists(threshold_file):
+                log_print(f"  Reading threshold table: {threshold_file}")
+                df = pd.read_csv(threshold_file, sep='\t', index_col=0)
+                threshold_dfs.append(df)
+            else:
+                log_print(f"  WARNING: Threshold table not found: {threshold_file}")
+        
+        if threshold_dfs:
+            # Combine all tables (they should have the same cells in the same order)
+            combined_thresholds = pd.concat(threshold_dfs, axis=0)
+            
+            # Remove duplicate indices (if same cells appear in multiple samples)
+            combined_thresholds = combined_thresholds[~combined_thresholds.index.duplicated(keep='first')]
+            
+            # Align with combined data
+            common_cells = combined_gex.obs.index.intersection(combined_thresholds.index)
+            log_print(f"  Found thresholds for {len(common_cells)}/{combined_gex.n_obs} cells")
+            
+            # Get config values - crash if not present
+            default_guide_cutoff = config['qc_analysis']['default_guide_cutoff']
+            default_granularity = config['qc_analysis']['default_granularity']
+            
+            # Build the expected column name
+            if isinstance(default_guide_cutoff, str) and default_guide_cutoff.startswith('gmm_'):
+                level = default_guide_cutoff[4:]  # Extract number from "gmm_50"
+                target_col = f'gmm_{level}_{default_granularity}_{cell_calling_method}'
+                
+                # Column must exist - crash if not
+                combined_gex.obs['guide_threshold'] = -1  # Default value for cells without data
+                combined_gex.obs.loc[common_cells, 'guide_threshold'] = combined_thresholds.loc[common_cells, target_col]
+                n_valid = (combined_gex.obs['guide_threshold'] > 0).sum()
+                log_print(f"  Added guide_threshold column (from {target_col}): {n_valid} cells with valid thresholds")
+                
+                # Store the guide calling method information in uns
+                combined_gex.uns['guide_calling_metadata'] = {
+                    'method': default_guide_cutoff,
+                    'granularity': default_granularity,
+                    'source_column': target_col,
+                    'n_cells_with_thresholds': int(n_valid)
+                }
+            else:
+                # Fixed threshold - no column needed, store value in uns
+                combined_gex.uns['guide_calling_metadata'] = {
+                    'method': 'fixed',
+                    'threshold': int(default_guide_cutoff),
+                    'granularity': 'uniform'
+                }
+    
+    # Step 4: Save combined file
+    log_print("\n💾 STEP 4: Saving combined output...")
     log_memory_usage()
     
     log_print(f"Writing combined data to {output_file}...")
@@ -258,18 +320,25 @@ def main():
     parser.add_argument('--h5ad-files', required=True, nargs='+', help='List of annotated h5ad file paths')
     parser.add_argument('--barcode-files', required=True, nargs='+', help='List of cell barcode file paths')
     parser.add_argument('--filter-files', required=True, nargs='+', help='List of QC cutoffs YAML file paths')
+    parser.add_argument('--threshold-tables', required=False, nargs='+', help='List of GMM threshold table paths')
     parser.add_argument('--cell-calling-method', required=True, help='Cell calling method used')
+    parser.add_argument('--config', required=True, help='Path to config file')
     parser.add_argument('--output', required=True, help='Output combined h5ad file path')
     args = parser.parse_args()
     
+    # Load config
+    with open(args.config) as f:
+        config = yaml.safe_load(f)
     
     # Run the combination
     combine_sublibraries(
         h5ad_files=args.h5ad_files,
         barcode_files=args.barcode_files,
         filter_files=args.filter_files,
+        threshold_tables=args.threshold_tables,
         cell_calling_method=args.cell_calling_method,
-        output_file=args.output
+        output_file=args.output,
+        config=config
     )
 
 

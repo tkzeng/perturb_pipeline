@@ -29,9 +29,6 @@ st.set_page_config(
 PLOTS_PER_PAGE = 60  # Divisible by 3 for grid layout
 MAX_FILTER_PREVIEW = 100  # Max items to show in filter dropdowns
 
-def snake_to_title(text):
-    """Convert snake_case to Title Case"""
-    return ' '.join(word.capitalize() for word in text.split('_'))
 
 def parse_path_metadata(file_path, base_path):
     """Extract metadata from file path relative to base path"""
@@ -210,7 +207,7 @@ def scan_and_index_plots(base_path="plots"):
         plot_info = {**path_meta, 'id': plot_id}
         
         # Create display name - always have one even if parsing failed
-        plot_info['display_name'] = snake_to_title(plot_info.get('stem', Path(png_file).stem))
+        plot_info['display_name'] = plot_info.get('stem', Path(png_file).stem)
         
         # If there's no category due to parse error, mark it as 'uncategorized'
         if 'category' not in plot_info and not plot_info.get('parse_error'):
@@ -358,7 +355,7 @@ def create_tab_filters(metadata_indices: Dict,
                     
                     if values:
                         with cols[col_idx]:
-                            display_key = snake_to_title(key)
+                            display_key = key
                             # Show number of options in help text
                             selected = st.selectbox(
                                 display_key,
@@ -372,7 +369,7 @@ def create_tab_filters(metadata_indices: Dict,
         
         # Show active filters summary
         if filters:
-            st.markdown("**Active filters:** " + ", ".join([f"{snake_to_title(k)}: {v}" for k, v in filters.items()]))
+            st.markdown("**Active filters:** " + ", ".join([f"{k}: {v}" for k, v in filters.items()]))
     
     # Apply all filters with AND logic to get final indices
     if not filters:
@@ -470,7 +467,7 @@ def display_grouped_plots(plots: List, primary_group: str, secondary_group: str)
         
         # Display each group
         for group_name in sorted(groups.keys()):
-            st.subheader(f"{snake_to_title(primary_group)}: {group_name}")
+            st.subheader(f"{primary_group}: {group_name}")
             group_plots = groups[group_name]
             # Create new columns for each row
             for i in range(0, len(group_plots), 3):
@@ -491,11 +488,11 @@ def display_grouped_plots(plots: List, primary_group: str, secondary_group: str)
         
         # Display nested groups
         for primary_name in sorted(primary_groups.keys()):
-            st.subheader(f"{snake_to_title(primary_group)}: {primary_name}")
+            st.subheader(f"{primary_group}: {primary_name}")
             
             for secondary_name in sorted(primary_groups[primary_name].keys()):
                 if len(primary_groups[primary_name]) > 1:
-                    st.markdown(f"**{snake_to_title(secondary_group)}: {secondary_name}**")
+                    st.markdown(f"**{secondary_group}: {secondary_name}**")
                 
                 secondary_plots = primary_groups[primary_name][secondary_name]
                 # Create new columns for each row
@@ -523,12 +520,12 @@ def display_single_plot(plot):
         for key in ['pool', 'sample', 'source', 'processing', 'metric', 
                     'stratify_by', 'sample_type', 'method', 'scale']:
             if key in plot and plot[key]:
-                metadata_parts.append(f"{snake_to_title(key)}: {plot[key]}")
+                metadata_parts.append(f"{key}: {plot[key]}")
         
         # Then show any level_X fields
         for key in sorted(plot.keys()):
             if key.startswith('level_') and plot[key]:
-                metadata_parts.append(f"{snake_to_title(key)}: {plot[key]}")
+                metadata_parts.append(f"{key}: {plot[key]}")
         
         
         if metadata_parts:
@@ -547,16 +544,6 @@ def display_single_plot(plot):
         # Add some spacing between plots
         st.markdown("---")
 
-
-def load_metric_glossary():
-    """Load metric glossary from TSV file."""
-    glossary_path = Path(__file__).parent / "metric_glossary.tsv"
-    
-    if glossary_path.exists():
-        return pd.read_csv(glossary_path, sep='\t')
-    else:
-        st.error(f"Metric glossary file not found: {glossary_path}")
-        return pd.DataFrame()  # Return empty dataframe
 
 
 
@@ -590,10 +577,8 @@ def main():
             if cat == 'parse_errors':
                 category_options.append(f"Parse Errors ({count})")
             else:
-                category_options.append(f"{snake_to_title(cat)} ({count})")
+                category_options.append(f"{cat} ({count})")
     
-    # Add metric glossary option
-    category_options.append("Metric Glossary")
     
     # Sidebar navigation
     with st.sidebar:
@@ -610,13 +595,11 @@ def main():
         # Extract the actual category name from display name
         if selected_category_display.startswith("Parse Errors"):
             selected_category = "parse_errors"
-        elif selected_category_display == "Metric Glossary":
-            selected_category = "metric_glossary"
         else:
             # Extract category name by removing count suffix
             selected_category = None
             for cat in plot_categories:
-                display_name = f"{snake_to_title(cat)} ({category_counts.get(cat, 0)})"
+                display_name = f"{cat} ({category_counts.get(cat, 0)})"
                 if selected_category_display == display_name:
                     selected_category = cat
                     break
@@ -627,76 +610,31 @@ def main():
     # Main content area
     
     # Display selected category
-    if selected_category == "metric_glossary":
-        # Metric glossary section
-        st.subheader("QC Metric Glossary")
-        st.info("Reference guide for all quality control metrics used in this pipeline")
+    if selected_category and 'category' in plot_metadata_indices and selected_category in plot_metadata_indices['category']:
+        category_indices = set(plot_metadata_indices['category'][selected_category])
         
-        # Load glossary
-        glossary_df = load_metric_glossary()
+        # Create filters using category-specific indices
+        cat_indices = category_plot_indices.get(selected_category, {})
+        cat_values = category_plot_values.get(selected_category, {})
         
-        if not glossary_df.empty:
-            # Add filter by category
-            col1, col2, col3 = st.columns([2, 2, 6])
-            with col1:
-                categories = ['All'] + sorted(glossary_df['Category'].unique().tolist())
-                selected_cat = st.selectbox("Filter by category:", categories)
-            
-            # Filter dataframe if category selected
-            if selected_cat != 'All':
-                display_df = glossary_df[glossary_df['Category'] == selected_cat]
-            else:
-                display_df = glossary_df
-            
-            # Display as interactive dataframe
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Category": st.column_config.TextColumn("Category", width="small"),
-                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
-                    "Calculation": st.column_config.TextColumn("Calculation", width="large"),
-                    "Description": st.column_config.TextColumn("Description", width="large"),
-                }
-            )
-            
-            # Add download button
-            tsv_data = display_df.to_csv(sep='\t', index=False)
-            st.download_button(
-                label="Download glossary as TSV",
-                data=tsv_data,
-                file_name="qc_metric_glossary.tsv",
-                mime="text/tab-separated-values"
-            )
-    
-    else:
-        # Plot category section
-        if selected_category and 'category' in plot_metadata_indices and selected_category in plot_metadata_indices['category']:
-            category_indices = set(plot_metadata_indices['category'][selected_category])
-            
-            # Create filters using category-specific indices
-            cat_indices = category_plot_indices.get(selected_category, {})
-            cat_values = category_plot_values.get(selected_category, {})
-            
-            filters, filtered_indices = create_tab_filters(
-                cat_indices, cat_values, f"cat_{selected_category}"
-            )
-            
-            # Add separator between filters and plots
-            st.markdown("---")
-            
-            # Apply category filter to results
-            if filtered_indices is not None:
-                filtered_indices = filtered_indices.intersection(category_indices)
-            else:
-                filtered_indices = category_indices
-            
-            # Display with pagination using category-specific values
-            display_plots_paginated(all_plots, filtered_indices, 
-                                  cat_values, f"display_{selected_category}")
+        filters, filtered_indices = create_tab_filters(
+            cat_indices, cat_values, f"cat_{selected_category}"
+        )
+        
+        # Add separator between filters and plots
+        st.markdown("---")
+        
+        # Apply category filter to results
+        if filtered_indices is not None:
+            filtered_indices = filtered_indices.intersection(category_indices)
         else:
-            st.error("Selected category not found")
+            filtered_indices = category_indices
+        
+        # Display with pagination using category-specific values
+        display_plots_paginated(all_plots, filtered_indices, 
+                              cat_values, f"display_{selected_category}")
+    else:
+        st.error("Selected category not found")
 
 if __name__ == '__main__':
     main()

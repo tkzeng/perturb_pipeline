@@ -14,6 +14,9 @@ import sys
 import os
 from pathlib import Path
 
+# Set global matplotlib parameters
+plt.rcParams['savefig.dpi'] = 100
+
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.pipeline_utils import log_print
@@ -113,7 +116,7 @@ def plot_umap_set(adata, output_dir, umap_colors, umap_key='X_umap', set_name='f
         # Save figure
         output_file = metric_dir / "plot.png"
         plt.tight_layout()
-        fig.savefig(output_file, dpi=150, bbox_inches='tight', facecolor='white')
+        fig.savefig(output_file, bbox_inches='tight', facecolor='white')
         plt.close(fig)
         
         log_print(f"      ✅ Saved: {output_file}")

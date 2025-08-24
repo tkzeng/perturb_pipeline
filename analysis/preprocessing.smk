@@ -27,7 +27,7 @@ from scripts.snakemake_helpers import (
     # File finding functions
     find_fastq_file, print_sample_summary,
     # Output generation functions
-    get_all_outputs
+    get_preprocessing_outputs
 )
 
 # Define base paths using helper functions
@@ -62,10 +62,43 @@ def load_sample_info_wrapper():
 
 rule all:
     input:
-        get_all_outputs(config),  # Default: main+raw and all+merged
-        # Temporary: ensure kite index is built
-        f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx" 
+        # The QC report DONE file now depends on ALL pipeline outputs via get_all_outputs()
+        # This ensures all plots, metrics, and analyses are complete before packaging
+        f"{RESULTS}/preprocessing_report/DONE.txt",
+        # Additional outputs not covered by get_all_outputs:
+        # Ensure kite index is built
+        f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        # Ensure gene annotation cache is built
+        f"{REFERENCES}/gene_annotations.tsv" 
 
+
+
+# =============================================================================
+# STAGE 0: REFERENCE PREPARATION
+# =============================================================================
+rule generate_gene_annotation_table:
+    """Generate pre-computed gene annotation table for fast lookups."""
+    input:
+        gene_database=config['input_paths']['gene_database'],
+        ribosomal_genes=config['input_paths']['ribosomal_genes'],
+        cell_cycle_genes=config['input_paths']['cell_cycle_genes'],
+        script="scripts/generate_gene_annotation_table.py"
+    output:
+        table_tsv=f"{REFERENCES}/gene_annotations.tsv"
+    log:
+        f"{LOGS}/generate_gene_annotation_table.log"
+    threads: 1
+    resources:
+        mem_mb=config["resources"]["light"]["mem_mb"]
+    shell:
+        """
+        python3 {input.script} \
+            --gene-database {input.gene_database} \
+            --ribosomal-genes {input.ribosomal_genes} \
+            --cell-cycle-genes {input.cell_cycle_genes} \
+            --output {output.table_tsv} \
+            &> {log}
+        """
 
 
 # =============================================================================
@@ -102,7 +135,7 @@ rule calculate_pool_statistics:
         undetermined_counts=f"{RESULTS}/{{pool}}:Undetermined/counts.txt",
         script="scripts/calculate_pool_statistics.py"
     output:
-        stats=f"{RESULTS}/qc_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv"
+        stats=f"{RESULTS}/preprocessing_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv"
     log:
         f"{LOGS}/calculate_pool_statistics_{{pool}}.log"
     params:
@@ -261,18 +294,21 @@ rule kite_index:
     input:
         guides=lambda wildcards: config['guide_file']
     output:
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
-        fa=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
+        index_idx=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        fa=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.fa"
     log:
         f"{LOGS}/kite_index.log"
     params:
-        outdir=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
+        outdir=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index"
     threads: config["resources"]["alignment"]["threads"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     shell:
         """
+        # Validate guide file format
+        python scripts/validate_guide_file.py {input.guides} || exit 1
+        
         # Check if the installed version has the modified collision detection
         if ! python -c "import kb_python.ref; import inspect; exit(0 if 'remove_collisions' in dir(kb_python.ref) else 1)" 2>/dev/null; then
             echo "ERROR: The installed kb_python does not have the modified remove_collisions function"
@@ -338,7 +374,8 @@ rule kallisto_gex:
         processing="raw|recovered|merged"
     params:
         out=f"{SCRATCH}/{{sample_id}}/kb_{{type}}_{{source}}_{{processing}}",
-        strand=config["kallisto"]["strand"]
+        strand=config["kallisto"]["strand"],
+        kb_chemistry=config["kallisto"]["kb_chemistry"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
@@ -357,6 +394,7 @@ rule kallisto_gex:
             nac {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            {params.kb_chemistry} \
             --cdna {input.cdna} --nascent {input.nascent} --mm &> {log}
         """
 
@@ -367,8 +405,8 @@ rule kallisto_guide:
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
         barcodes=config["input_paths"]["barcodes_file"],
         replace=config["input_paths"]["replace_file"],
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        index_idx=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
         # Ensure barcode recovery is done first if processing recovered reads
         recovery_done=lambda wildcards: f"{SCRATCH}/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
         # Script dependency
@@ -388,7 +426,8 @@ rule kallisto_guide:
         processing="raw|recovered|merged"
     params:
         out=f"{SCRATCH}/{{sample_id}}/kb_guide_{{source}}_{{processing}}",
-        strand=config["kallisto"]["strand"]
+        strand=config["kallisto"]["strand"],
+        kb_chemistry=config["kallisto"]["kb_chemistry"]
     resources:
         mem_mb=config["resources"]["alignment"]["mem_mb"],
     threads:
@@ -402,7 +441,8 @@ rule kallisto_guide:
         python scripts/run_kb_count.py \
             kite {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
-            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} &> {log}
+            {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            {params.kb_chemistry} &> {log}
         """
 
 
@@ -428,7 +468,8 @@ rule kallisto_gex_subsampled:
         fraction="0\\.1|0\\.25|0\\.5|0\\.75"
     params:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_all",
-        strand=config["kallisto"]["strand"]
+        strand=config["kallisto"]["strand"],
+        kb_chemistry=config["kallisto"]["kb_chemistry"]
     threads:
         config["resources"]["alignment"]["threads"]
     resources:
@@ -447,6 +488,7 @@ rule kallisto_gex_subsampled:
             nac {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            {params.kb_chemistry} \
             --cdna {input.cdna} --nascent {input.nascent} --mm \
             --max-reads $TARGET_READS &> {log}
         """
@@ -459,8 +501,8 @@ rule kallisto_guide_subsampled:
         read_counts=f"{RESULTS}/{{sample_id}}/counts.txt",
         replace=config["input_paths"]["replace_file"],
         barcodes=config["input_paths"]["barcodes_file"],
-        index_idx=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
-        t2g=f"{REFERENCES}/kite/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
+        index_idx=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
+        t2g=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
         script="scripts/run_kb_count.py"
     output:
         kb_info=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide/kb_info.json",
@@ -472,7 +514,8 @@ rule kallisto_guide_subsampled:
         fraction="0\\.1|0\\.25|0\\.5|0\\.75"
     params:
         out=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_guide",
-        strand=config["kallisto"]["strand"]
+        strand=config["kallisto"]["strand"],
+        kb_chemistry=config["kallisto"]["kb_chemistry"]
     threads:
         config["resources"]["alignment"]["threads"]
     resources:
@@ -491,6 +534,7 @@ rule kallisto_guide_subsampled:
             kite {params.strand} \
             {input.fq1} {input.fq2} {params.out} {threads} \
             {input.index_idx} {input.t2g} {input.barcodes} {input.replace} \
+            {params.kb_chemistry} \
             --max-reads $TARGET_READS &> {log}
         """
 
@@ -529,6 +573,8 @@ rule filter_and_annotate_sublibrary:
         gex_h5ad=f"{SCRATCH}/{{gex_sample_id}}/kb_all_{{source}}_{{processing}}/counts_unfiltered/adata.h5ad",
         # Guide unfiltered kallisto output - specific file for dependency tracking
         guide_h5ad=lambda wildcards: f"{SCRATCH}/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}/counts_unfiltered/adata.h5ad",
+        # Gene annotation table
+        gene_table=f"{REFERENCES}/gene_annotations.tsv",
         # Config file
         config_file=workflow.configfiles[0],
         script="scripts/sublibrary_annotation.py"
@@ -550,7 +596,6 @@ rule filter_and_annotate_sublibrary:
         guide_sample=lambda wildcards: extract_sample(gex_to_guide[wildcards.gex_sample_id]),  # Just the sample name
         gex_sample_id="{gex_sample_id}",  # Full sample_id for lookups
         guide_sample_id=lambda wildcards: gex_to_guide[wildcards.gex_sample_id],  # Full sample_id for lookups
-        guide_cutoff=config['sublibrary_filtering']['guide_assignment_cutoff'],
         # Directory paths for the script
         gex_kb_dir=f"{SCRATCH}/{{gex_sample_id}}/kb_all_{{source}}_{{processing}}",
         guide_kb_dir=lambda wildcards: f"{SCRATCH}/{gex_to_guide[wildcards.gex_sample_id]}/kb_guide_{wildcards.source}_{wildcards.processing}"
@@ -563,12 +608,12 @@ rule filter_and_annotate_sublibrary:
             --gex-kb-dir {params.gex_kb_dir} \
             --guide-kb-dir {params.guide_kb_dir} \
             --output-dir {output.output_dir} \
-            --cutoff {params.guide_cutoff} \
             --config {input.config_file} \
             --sample-id {params.gex_sample_id} \
             --guide-sample-id {params.guide_sample_id} \
             --source {wildcards.source} \
-            --processing {wildcards.processing}"
+            --processing {wildcards.processing} \
+            --gene-annotation-table {input.gene_table}"
         
         # Execute
         $CMD &> {log}
@@ -634,9 +679,11 @@ rule cell_calling_analysis:
         script="scripts/cell_calling_analysis.py"
     output:
         # Directory containing all cell calling outputs
-        cell_calling_dir=directory(f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling"),
+        cell_calling_dir=directory(f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling"),
         # Key summary files for downstream use
-        summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv"
+        summary=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv",
+        # Default method cell barcodes file (needed by generate_qc_cell_lists)
+        default_barcodes=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/{{sample_id}}_{config['cell_calling']['default_method']}_cell_barcodes.txt"
     log:
         f"{LOGS}/cell_calling_{{sample_id}}_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -668,15 +715,15 @@ rule cell_calling_analysis:
 rule cell_calling_plots:
     input:
         h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
-        cell_calling_dir=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
-        summary=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv",
+        cell_calling_dir=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
+        summary=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/results.tsv",
         read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_{{source}}_{{processing}}_read_statistics.tsv",
         script="scripts/cell_calling_plots_no_json.py"
     output:
-        plot_dir=directory(f"{RESULTS}/qc_report/plots/cell_calling/{{source}}_{{processing}}/{{sample_id}}"),
-        complete=f"{RESULTS}/qc_report/plots/cell_calling/{{source}}_{{processing}}/{{sample_id}}.complete"
+        plot_dir=directory(f"{RESULTS}/preprocessing_report/plots/cell_calling/{{source}}_{{processing}}/{{sample_id}}"),
+        complete=f"{RESULTS}/preprocessing_report/plots/cell_calling/{{source}}_{{processing}}/{{sample_id}}.complete"
     params:
-        plot_dir=f"{RESULTS}/qc_report/plots",
+        plot_dir=f"{RESULTS}/preprocessing_report/plots",
         sample_id="{sample_id}"
     log:
         f"{LOGS}/cell_calling_plots_{{sample_id}}_{{source}}_{{processing}}.log"
@@ -709,11 +756,11 @@ rule generate_qc_cell_lists:
     input:
         h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
         # Add cell calling results as dependency
-        cell_barcodes=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/{{sample_id}}_{config['cell_calling']['default_method']}_cell_barcodes.txt",
+        cell_barcodes=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling/{{sample_id}}_{config['cell_calling']['default_method']}_cell_barcodes.txt",
         script="scripts/generate_qc_cell_lists.py"
     output:
-        qc_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv",
-        debug_plot_dir=directory(f"{RESULTS}/qc_report/plots/gmm_qc/{{source}}_{{processing}}/{{sample_id}}")
+        qc_lists=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv",
+        debug_plot_dir=directory(f"{RESULTS}/preprocessing_report/plots/cell_quality_qc/{{source}}_{{processing}}/{{sample_id}}")
     params:
         config_file=workflow.configfiles[0]
     log:
@@ -733,81 +780,161 @@ rule generate_qc_cell_lists:
         """
 
 
-rule calculate_qc_metrics_stratified:
-    """Calculate comprehensive QC metrics at three stratification levels"""
+rule calculate_gmm_thresholds:
+    """Calculate GMM thresholds and generate mixture model plots"""
     input:
-        # Annotated h5ad with both GEX and guide data
         h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
-        # Cell calling results directory
-        cell_calling_dir=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
-        # Read statistics for GEX
-        read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_{{source}}_{{processing}}_read_statistics.tsv",
-        # Read statistics for paired guide sample
-        guide_stats=lambda wildcards: f"{RESULTS}/{gex_to_guide[wildcards.sample_id]}/qc/{gex_to_guide[wildcards.sample_id]}_guide_{wildcards.source}_{wildcards.processing}_read_statistics.tsv",
-        # QC cell lists (for plotting only)
-        qc_lists=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv",
-        script="scripts/calculate_qc_metrics_by_biological_sample.py"
+        cell_calling_dir=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
+        script="scripts/guide_analysis.py"
     output:
-        qc_metrics_sample=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_sample.tsv",
-        qc_metrics_bio=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_biological_sample.tsv",
-        qc_metrics_well=f"{RESULTS}/qc_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_well.tsv",
-        plots_dir=directory(f"{RESULTS}/qc_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}")
-    log:
-        f"{LOGS}/qc_metrics_stratified_{{sample_id}}_{{source}}_{{processing}}.log"
+        threshold_table=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/gmm_thresholds_per_cell.tsv"
+    log: f"{LOGS}/gmm_thresholds_{{sample_id}}_{{source}}_{{processing}}.log"
+    threads: config["resources"]["analysis"]["threads"]
     wildcard_constraints:
-        sample_id="|".join(GEX_IDS),  # Only match GEX sample IDs
+        sample_id="|".join(GEX_IDS),
         source="main|undetermined|all",
         processing="raw|recovered|merged"
     params:
-        sample_id="{sample_id}",  # Full sample_id for the script
-        pool=lambda wildcards: extract_pool(wildcards.sample_id)
+        sample_id="{sample_id}",
+        config_file=workflow.configfiles[0],
+        plot_dir=f"{RESULTS}/preprocessing_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}"
     shell:
         """
-        # Calculate by sample (replaces calculate_qc_metrics_after_cell_calling)
+        python {input.script} \
+            --h5ad {input.h5ad} \
+            --cell-calling-dir {input.cell_calling_dir} \
+            --sample-id {params.sample_id} \
+            --config {params.config_file} \
+            --output {output.threshold_table} \
+            --plot-dir {params.plot_dir} \
+            --threads {threads} \
+            > {log} 2>&1
+        """
+
+
+rule calculate_qc_metrics_sample:
+    """Calculate QC metrics at sample level"""
+    input:
+        h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
+        cell_calling_dir=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
+        read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_{{source}}_{{processing}}_read_statistics.tsv",
+        guide_stats=lambda wildcards: f"{RESULTS}/{gex_to_guide[wildcards.sample_id]}/qc/{gex_to_guide[wildcards.sample_id]}_guide_{wildcards.source}_{wildcards.processing}_read_statistics.tsv",
+        qc_lists=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_cell_lists.tsv",
+        gmm_thresholds=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/gmm_thresholds_per_cell.tsv",
+        script="scripts/calculate_qc_metrics_by_biological_sample.py"
+    output:
+        qc_metrics_sample=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_sample.tsv"
+    log: f"{LOGS}/qc_metrics_sample_{{sample_id}}_{{source}}_{{processing}}.log"
+    threads: config["resources"]["analysis"]["threads"]
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        sample_id="{sample_id}",
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        plot_dir=f"{RESULTS}/preprocessing_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}"
+    shell:
+        """
         python3 {input.script} \
             --h5ad {input.h5ad} \
             --cell-calling-dir {input.cell_calling_dir} \
             --read-stats {input.read_stats} \
             --guide-read-stats {input.guide_stats} \
+            --gmm-thresholds {input.gmm_thresholds} \
             --sample-id {params.sample_id} \
             --config {workflow.configfiles[0]} \
             --stratify-by sample \
             --output {output.qc_metrics_sample} \
-            --plot-dir {output.plots_dir} \
+            --plot-dir {params.plot_dir} \
             --pool {params.pool} \
             --source {wildcards.source} \
             --processing {wildcards.processing} \
-            --qc-cell-lists {input.qc_lists} &> {log}
-        
-        # Calculate by biological sample
+            --qc-cell-lists {input.qc_lists} \
+            --threads {threads} \
+            --per-cell-plot-method {config[cell_calling][default_method]} &> {log}
+        """
+
+rule calculate_qc_metrics_biological:
+    """Calculate QC metrics at biological sample level"""
+    input:
+        h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
+        cell_calling_dir=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
+        read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_{{source}}_{{processing}}_read_statistics.tsv",
+        guide_stats=lambda wildcards: f"{RESULTS}/{gex_to_guide[wildcards.sample_id]}/qc/{gex_to_guide[wildcards.sample_id]}_guide_{wildcards.source}_{wildcards.processing}_read_statistics.tsv",
+        gmm_thresholds=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/gmm_thresholds_per_cell.tsv",
+        script="scripts/calculate_qc_metrics_by_biological_sample.py"
+    output:
+        qc_metrics_bio=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_biological_sample.tsv"
+    log: f"{LOGS}/qc_metrics_biological_{{sample_id}}_{{source}}_{{processing}}.log"
+    threads: config["resources"]["analysis"]["threads"]
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        sample_id="{sample_id}",
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        plot_dir=f"{RESULTS}/preprocessing_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}"
+    shell:
+        """
         python3 {input.script} \
             --h5ad {input.h5ad} \
             --cell-calling-dir {input.cell_calling_dir} \
             --read-stats {input.read_stats} \
             --guide-read-stats {input.guide_stats} \
+            --gmm-thresholds {input.gmm_thresholds} \
             --sample-id {params.sample_id} \
             --config {workflow.configfiles[0]} \
             --stratify-by biological_sample \
             --output {output.qc_metrics_bio} \
-            --plot-dir {output.plots_dir} \
+            --plot-dir {params.plot_dir} \
             --pool {params.pool} \
             --source {wildcards.source} \
-            --processing {wildcards.processing} &>> {log}
-        
-        # Calculate by well
+            --processing {wildcards.processing} \
+            --threads {threads} \
+            --per-cell-plot-method {config[cell_calling][default_method]} &> {log}
+        """
+
+rule calculate_qc_metrics_well:
+    """Calculate QC metrics at well level"""
+    input:
+        h5ad=f"{SCRATCH}/{{sample_id}}/kb_all_{{source}}_{{processing}}/counts_filtered/adata.h5ad",
+        cell_calling_dir=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/cell_calling",
+        read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_{{source}}_{{processing}}_read_statistics.tsv",
+        guide_stats=lambda wildcards: f"{RESULTS}/{gex_to_guide[wildcards.sample_id]}/qc/{gex_to_guide[wildcards.sample_id]}_guide_{wildcards.source}_{wildcards.processing}_read_statistics.tsv",
+        gmm_thresholds=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/gmm_thresholds_per_cell.tsv",
+        script="scripts/calculate_qc_metrics_by_biological_sample.py"
+    output:
+        qc_metrics_well=f"{RESULTS}/preprocessing_report/data/per_sample/{{source}}_{{processing}}/{{sample_id}}/qc_metrics/by_well.tsv"
+    log: f"{LOGS}/qc_metrics_well_{{sample_id}}_{{source}}_{{processing}}.log"
+    threads: config["resources"]["analysis"]["threads"]
+    wildcard_constraints:
+        sample_id="|".join(GEX_IDS),
+        source="main|undetermined|all",
+        processing="raw|recovered|merged"
+    params:
+        sample_id="{sample_id}",
+        pool=lambda wildcards: extract_pool(wildcards.sample_id),
+        plot_dir=f"{RESULTS}/preprocessing_report/plots/per_cell/{{source}}_{{processing}}/{{sample_id}}"
+    shell:
+        """
         python3 {input.script} \
             --h5ad {input.h5ad} \
             --cell-calling-dir {input.cell_calling_dir} \
             --read-stats {input.read_stats} \
             --guide-read-stats {input.guide_stats} \
+            --gmm-thresholds {input.gmm_thresholds} \
             --sample-id {params.sample_id} \
             --config {workflow.configfiles[0]} \
             --stratify-by well \
             --output {output.qc_metrics_well} \
-            --plot-dir {output.plots_dir} \
+            --plot-dir {params.plot_dir} \
             --pool {params.pool} \
             --source {wildcards.source} \
-            --processing {wildcards.processing} &>> {log}
+            --processing {wildcards.processing} \
+            --threads {threads} \
+            --per-cell-plot-method {config[cell_calling][default_method]} &> {log}
         """
 
 
@@ -816,7 +943,7 @@ rule umi_saturation_analysis:
         # Main data (100% point) - using the main raw output
         kb_info=f"{SCRATCH}/{{sample_id}}/kb_all_main_raw/kb_info.json",
         main_unfiltered=f"{SCRATCH}/{{sample_id}}/kb_all_main_raw/counts_unfiltered/adata.h5ad",
-        cell_calling_results=f"{RESULTS}/qc_report/data/per_sample/main_raw/{{sample_id}}/cell_calling/results.tsv",
+        cell_calling_results=f"{RESULTS}/preprocessing_report/data/per_sample/main_raw/{{sample_id}}/cell_calling/results.tsv",
         read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_all_main_raw_read_statistics.tsv",
         # Subsampled matrices - Snakemake will automatically generate these (unfiltered)
         subsampled_01=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-0.1/kb_all/counts_unfiltered/adata.h5ad",
@@ -825,14 +952,15 @@ rule umi_saturation_analysis:
         subsampled_075=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-0.75/kb_all/counts_unfiltered/adata.h5ad",
         script="scripts/umi_saturation_analysis.py"
     output:
-        saturation=f"{RESULTS}/qc_report/data/per_sample/main_raw/{{sample_id}}/saturation/umi_saturation.tsv",
-        plot_dir=directory(f"{RESULTS}/qc_report/plots/saturation/main_raw/gex/{{sample_id}}")
+        saturation=f"{RESULTS}/preprocessing_report/data/per_sample/main_raw/{{sample_id}}/saturation/umi_saturation.tsv",
+        plot_dir=directory(f"{RESULTS}/preprocessing_report/plots/saturation/main_raw/gex/{{sample_id}}")
     log:
         f"{LOGS}/umi_saturation_gex_{{sample_id}}.log"
+    threads: config["resources"]["analysis"]["threads"]
     wildcard_constraints:
         sample_id="|".join(GEX_IDS)  # Only match GEX sample IDs
     params:
-        cell_calling_dir=f"{RESULTS}/qc_report/data/per_sample/main_raw/{{sample_id}}/cell_calling",
+        cell_calling_dir=f"{RESULTS}/preprocessing_report/data/per_sample/main_raw/{{sample_id}}/cell_calling",
         sample_id="{sample_id}",
         scratch_dir=SCRATCH
     shell:
@@ -847,7 +975,8 @@ rule umi_saturation_analysis:
             --sample_type gex \
             --source main \
             --processing raw \
-            --scratch-dir {params.scratch_dir} &> {log}
+            --scratch-dir {params.scratch_dir} \
+            --threads {threads} &> {log}
         """
 
 
@@ -858,7 +987,7 @@ rule umi_saturation_analysis_guide:
         main_unfiltered=f"{SCRATCH}/{{sample_id}}/kb_guide_main_raw/counts_unfiltered/adata.h5ad",
         read_stats=f"{RESULTS}/{{sample_id}}/qc/{{sample_id}}_guide_main_raw_read_statistics.tsv",
         # Depend on the paired GEX cell calling results
-        cell_calling_results=lambda wildcards: f"{RESULTS}/qc_report/data/per_sample/main_raw/{guide_to_gex[wildcards.sample_id]}/cell_calling/results.tsv",
+        cell_calling_results=lambda wildcards: f"{RESULTS}/preprocessing_report/data/per_sample/main_raw/{guide_to_gex[wildcards.sample_id]}/cell_calling/results.tsv",
         # Subsampled guide matrices - Snakemake will automatically generate these (unfiltered)
         subsampled_01=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-0.1/kb_guide/counts_unfiltered/adata.h5ad",
         subsampled_025=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-0.25/kb_guide/counts_unfiltered/adata.h5ad",
@@ -866,15 +995,16 @@ rule umi_saturation_analysis_guide:
         subsampled_075=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-0.75/kb_guide/counts_unfiltered/adata.h5ad",
         script="scripts/umi_saturation_analysis.py"
     output:
-        saturation=f"{RESULTS}/qc_report/data/per_sample/main_raw/{{sample_id}}/saturation/guide_umi_saturation.tsv",
-        plot_dir=directory(f"{RESULTS}/qc_report/plots/saturation/main_raw/guide/{{sample_id}}")
+        saturation=f"{RESULTS}/preprocessing_report/data/per_sample/main_raw/{{sample_id}}/saturation/guide_umi_saturation.tsv",
+        plot_dir=directory(f"{RESULTS}/preprocessing_report/plots/saturation/main_raw/guide/{{sample_id}}")
     log:
         f"{LOGS}/umi_saturation_guide_{{sample_id}}.log"
+    threads: config["resources"]["analysis"]["threads"]
     wildcard_constraints:
         sample_id="|".join(GUIDE_IDS)  # Only match guide sample IDs
     params:
         # Cell calling directory is from the paired GEX sample
-        cell_calling_dir=lambda wildcards: f"{RESULTS}/qc_report/data/per_sample/main_raw/{guide_to_gex[wildcards.sample_id]}/cell_calling",
+        cell_calling_dir=lambda wildcards: f"{RESULTS}/preprocessing_report/data/per_sample/main_raw/{guide_to_gex[wildcards.sample_id]}/cell_calling",
         sample_id="{sample_id}",
         scratch_dir=SCRATCH
     shell:
@@ -889,7 +1019,8 @@ rule umi_saturation_analysis_guide:
             --sample_type guide \
             --source main \
             --processing raw \
-            --scratch-dir {params.scratch_dir} &> {log}
+            --scratch-dir {params.scratch_dir} \
+            --threads {threads} &> {log}
         """
 
 
@@ -901,25 +1032,25 @@ rule consolidate_qc_metrics:
     """Consolidate QC metrics across all samples using simple concatenation"""
     input:
         # QC metrics after cell calling for all GEX samples (already includes read stats and guide stats)
-        qc_metrics=lambda wildcards: [f"{RESULTS}/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_sample.tsv" 
+        qc_metrics=lambda wildcards: [f"{RESULTS}/preprocessing_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_sample.tsv" 
                                       for _, row in load_sample_info(config).iterrows() 
                                       if row['sample_type'] == 'gex'],
         # Biological sample QC metrics
-        bio_metrics=lambda wildcards: [f"{RESULTS}/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_biological_sample.tsv" 
+        bio_metrics=lambda wildcards: [f"{RESULTS}/preprocessing_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_biological_sample.tsv" 
                                        for _, row in load_sample_info(config).iterrows() 
                                        if row['sample_type'] == 'gex'],
         # Well QC metrics
-        well_metrics=lambda wildcards: [f"{RESULTS}/qc_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_well.tsv" 
+        well_metrics=lambda wildcards: [f"{RESULTS}/preprocessing_report/data/per_sample/{wildcards.source}_{wildcards.processing}/{row['sample_id']}/qc_metrics/by_well.tsv" 
                                         for _, row in load_sample_info(config).iterrows() 
                                         if row['sample_type'] == 'gex'],
         # Pool statistics (only for main/raw since undetermined doesn't apply to other combinations)
-        pool_stats=lambda wildcards: expand(f"{RESULTS}/qc_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv",
+        pool_stats=lambda wildcards: expand(f"{RESULTS}/preprocessing_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv",
                                           pool=load_sample_info(config)['pool'].unique()) if wildcards.source == 'main' and wildcards.processing == 'raw' else [],
         script="scripts/consolidate_qc_simple.py"
     output:
-        combined=f"{RESULTS}/qc_report/data/consolidated/{{source}}_{{processing}}/all_metrics.tsv",
-        combined_bio=f"{RESULTS}/qc_report/data/consolidated/{{source}}_{{processing}}/by_biological_sample.tsv",
-        combined_well=f"{RESULTS}/qc_report/data/consolidated/{{source}}_{{processing}}/by_well.tsv"
+        combined=f"{RESULTS}/preprocessing_report/data/consolidated/{{source}}_{{processing}}/all_metrics.tsv",
+        combined_bio=f"{RESULTS}/preprocessing_report/data/consolidated/{{source}}_{{processing}}/by_biological_sample.tsv",
+        combined_well=f"{RESULTS}/preprocessing_report/data/consolidated/{{source}}_{{processing}}/by_well.tsv"
     log:
         f"{LOGS}/consolidate_qc_metrics_{{source}}_{{processing}}.log"
     wildcard_constraints:
@@ -950,18 +1081,18 @@ rule consolidate_qc_metrics:
 rule visualize_consolidated_qc:
     """Generate visualizations for consolidated QC metrics"""
     input:
-        sample_metrics=f"{RESULTS}/qc_report/data/consolidated/{{source}}_{{processing}}/all_metrics.tsv",
-        bio_metrics=f"{RESULTS}/qc_report/data/consolidated/{{source}}_{{processing}}/by_biological_sample.tsv",
-        well_metrics=f"{RESULTS}/qc_report/data/consolidated/{{source}}_{{processing}}/by_well.tsv",
+        sample_metrics=f"{RESULTS}/preprocessing_report/data/consolidated/{{source}}_{{processing}}/all_metrics.tsv",
+        bio_metrics=f"{RESULTS}/preprocessing_report/data/consolidated/{{source}}_{{processing}}/by_biological_sample.tsv",
+        well_metrics=f"{RESULTS}/preprocessing_report/data/consolidated/{{source}}_{{processing}}/by_well.tsv",
         script="scripts/visualize_aggregated_qc_metrics_no_json.py"
     output:
         # Track both consolidated plot directories
-        plot_dir_general=directory(f"{RESULTS}/qc_report/plots/consolidated_general/{{source}}_{{processing}}"),
-        plot_dir_cell_based=directory(f"{RESULTS}/qc_report/plots/consolidated_cell_based/{{source}}_{{processing}}"),
+        plot_dir_general=directory(f"{RESULTS}/preprocessing_report/plots/consolidated_general/{{source}}_{{processing}}"),
+        plot_dir_cell_based=directory(f"{RESULTS}/preprocessing_report/plots/consolidated_cell_based/{{source}}_{{processing}}"),
         # Sentinel file to track completion
-        complete=f"{RESULTS}/qc_report/plots/consolidated_{{source}}_{{processing}}.complete"
+        complete=f"{RESULTS}/preprocessing_report/plots/consolidated_{{source}}_{{processing}}.complete"
     params:
-        output_dir=f"{RESULTS}/qc_report/plots"
+        output_dir=f"{RESULTS}/preprocessing_report/plots"
     wildcard_constraints:
         source="main|undetermined|all",
         processing="raw|recovered|merged"
@@ -1006,14 +1137,14 @@ rule visualize_consolidated_qc:
 rule process_pool_metrics:
     """Consolidate and visualize pool-level metrics (only for main/raw)"""
     input:
-        pool_stats=expand(f"{RESULTS}/qc_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv",
+        pool_stats=expand(f"{RESULTS}/preprocessing_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv",
                          pool=load_sample_info(config)['pool'].unique()),
         consolidate_script="scripts/consolidate_qc_simple.py",
         visualize_script="scripts/visualize_aggregated_qc_metrics_no_json.py"
     output:
-        combined_pool=f"{RESULTS}/qc_report/data/consolidated/main_raw/by_pool.tsv"
+        combined_pool=f"{RESULTS}/preprocessing_report/data/consolidated/main_raw/by_pool.tsv"
     params:
-        output_dir=f"{RESULTS}/qc_report/plots"
+        output_dir=f"{RESULTS}/preprocessing_report/plots"
     log:
         f"{LOGS}/process_pool_metrics.log"
     shell:
@@ -1038,43 +1169,39 @@ rule process_pool_metrics:
 # =============================================================================
 # STAGE 8: FINAL OUTPUTS AND PACKAGING
 # =============================================================================
-rule generate_qc_report:
+rule generate_preprocessing_report:
     """Package QC outputs for laptop viewing with Streamlit dashboard"""
     input:
-        # Get all QC report files from the categorized outputs (basic QC only)
-        files=lambda wildcards: [f for category in ['read_stats', 'cell_calling',
-                                             'qc_metrics', 'saturation',
-                                             'consolidated']
-                          for f in get_all_outputs(config, as_dict=True)[category]],
+        # Get ALL outputs from the pipeline (except the report itself to avoid circular dependency)
+        # This includes:
+        # - Read statistics
+        # - Cell calling results and plots  
+        # - QC metrics (sample, biological sample, well, pool)
+        # - Saturation analysis data and plots (both GEX and guide)
+        # - Consolidated metrics and visualizations
+        # - All plot directories and completion markers
+        all_outputs=get_preprocessing_outputs(config, report_dir="preprocessing_report"),
+        # Additional explicit inputs needed by the packaging script
         sample_info=config['sample_info_file'],
         dashboard_script="scripts/streamlit_qc_dashboard_optimized.py",
         package_script="scripts/package_qc_for_laptop_fast_no_json.py"
     output:
-        done=f"{RESULTS}/qc_report/DONE.txt"
+        done=f"{RESULTS}/preprocessing_report/DONE.txt"
     params:
         timestamp=lambda wildcards: datetime.now().strftime("%Y%m%d_%H%M%S")
     log:
-        f"{LOGS}/generate_qc_report.log"
+        f"{LOGS}/generate_preprocessing_report.log"
     shell:
         """
-        # Create temporary file with input list
-        TMPFILE=$(mktemp /tmp/qc_files_XXXXXX.txt)
-        for f in {input.files}; do
-            echo "$f" >> $TMPFILE
-        done
-        
-        # Run packaging script
+        # Run packaging script with QC report directory
         python -u {input.package_script} \
-            --input-file-list $TMPFILE \
+            --qc-report-dir {RESULTS}/preprocessing_report \
             --sample-info {input.sample_info} \
             --dashboard-script {input.dashboard_script} \
             --output-archive {RESULTS}/qc_dashboard_preprocessing_{params.timestamp}.tar.gz \
             --per-cell-method-filter {config[cell_calling][default_method]} \
             --guide-cutoff-filter 1,2 \
             --threads {threads} &> {log}
-        
-        # Clean up temp file
-        rm -f $TMPFILE
         
         # Create done file
         touch {output.done}

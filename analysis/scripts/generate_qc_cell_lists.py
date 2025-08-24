@@ -23,6 +23,9 @@ from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Ellipse
+
+# Set global matplotlib parameters
+plt.rcParams['savefig.dpi'] = 100
 import os
 
 
@@ -43,9 +46,6 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
     umi_clean = umi_counts[mask]
     gene_clean = gene_counts[mask]
     
-    if len(mito_clean) < 100:  # Need minimum cells for meaningful analysis
-        return {'converged': False, 'error': 'Insufficient data points'}
-    
     # Log transform (using log1p to handle zeros)
     log_umis = np.log1p(umi_clean)
     log_genes = np.log1p(gene_clean)
@@ -58,17 +58,37 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
     # Calculate residuals
     residuals = log_genes - predicted_log_genes
     
+    # Remove outliers from residuals using IQR method before GMM fitting
+    Q1 = np.percentile(residuals, 25)
+    Q3 = np.percentile(residuals, 75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    
+    # Create mask for outliers
+    outlier_mask = (residuals < lower_bound) | (residuals > upper_bound)
+    inlier_mask = ~outlier_mask
+    n_outliers = np.sum(outlier_mask)
+    pct_outliers = 100 * n_outliers / len(residuals)
+    
     # Prepare features for 2D GMM
     # Order: [residuals, mito] to match plotting convention
     features = np.column_stack([residuals, mito_clean])
     
-    # Standardize features
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features)
+    # Use only inliers for fitting but prepare scaler on all data
+    features_inliers = features[inlier_mask]
     
-    # Fit 2D GMM
+    # Standardize features using inliers only
+    scaler = StandardScaler()
+    scaler.fit(features_inliers)
+    features_scaled_inliers = scaler.transform(features_inliers)
+    
+    # Fit 2D GMM on inliers only
     gmm = GaussianMixture(n_components=2, random_state=42, covariance_type='full')
-    gmm.fit(features_scaled)
+    gmm.fit(features_scaled_inliers)
+    
+    # Transform ALL data (including outliers) for prediction
+    features_scaled = scaler.transform(features)
     
     # Get predictions (even if not converged)
     labels = gmm.predict(features_scaled)
@@ -134,11 +154,22 @@ def calculate_2d_gmm_statistics(mito_values, umi_counts, gene_counts):
             }
         },
         'thresholds': thresholds,
+        'outlier_removal': {
+            'n_outliers': int(n_outliers),
+            'pct_outliers': float(pct_outliers),
+            'residual_bounds': {
+                'lower': float(lower_bound),
+                'upper': float(upper_bound),
+                'Q1': float(Q1),
+                'Q3': float(Q3),
+                'IQR': float(IQR)
+            }
+        },
         'bic': float(gmm.bic(features_scaled)),
         'aic': float(gmm.aic(features_scaled)),
         'posteriors': posteriors,  # Return full posterior array
         'compromised_idx': compromised_idx,
-        'gmm_model': gmm,  # Return the GMM model for plotting
+        'cell_quality_model': gmm,  # Return the cell quality model for plotting
         'scaler': scaler  # Return the scaler for plotting
     }
     
@@ -164,21 +195,21 @@ def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_ou
     # 2D GMM method (DEFAULT)
     if 'total_counts' in adata.obs.columns and 'n_genes' in adata.obs.columns:
         # Calculate 2D GMM
-        gmm_2d_stats = calculate_2d_gmm_statistics(
+        cell_quality_stats = calculate_2d_gmm_statistics(
             mito_values,
             adata.obs['total_counts'].values,
             adata.obs['n_genes'].values
         )
         
         # Always get the posterior probabilities
-        posteriors = gmm_2d_stats['posteriors']
-        compromised_idx = gmm_2d_stats['compromised_idx']
+        posteriors = cell_quality_stats['posteriors']
+        compromised_idx = cell_quality_stats['compromised_idx']
         
         # Get probability of being compromised
         prob_compromised = posteriors[:, compromised_idx]
         
         # Save the continuous posterior probability
-        cell_lists['gmm_posterior_prob_compromised'] = prob_compromised
+        cell_lists['posterior_prob_compromised'] = prob_compromised
         
         # Create debug plots if requested
         if save_plots and plot_output:
@@ -249,9 +280,9 @@ def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_ou
                     edgecolors='none'
                 )
                 
-                # Add GMM contour ellipses
-                gmm_model = gmm_2d_stats['gmm_model']
-                scaler = gmm_2d_stats['scaler']
+                # Add cell quality model contour ellipses
+                cell_quality_model = cell_quality_stats['cell_quality_model']
+                scaler = cell_quality_stats['scaler']
                 
                 # Draw confidence ellipses for each component
                 def draw_ellipse(ax, mean, cov, color, label, n_std=2.0):
@@ -275,11 +306,11 @@ def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_ou
                 
                 # Get component parameters in original space
                 for comp_idx, (comp_name, comp_color) in enumerate([('healthy', 'blue'), ('compromised', 'red')]):
-                    comp_key = gmm_2d_stats['components'][comp_name]['idx']
+                    comp_key = cell_quality_stats['components'][comp_name]['idx']
                     
                     # Transform mean and covariance back to original space
-                    mean_scaled = gmm_model.means_[comp_key]
-                    cov_scaled = gmm_model.covariances_[comp_key]
+                    mean_scaled = cell_quality_model.means_[comp_key]
+                    cov_scaled = cell_quality_model.covariances_[comp_key]
                     
                     # Inverse transform to get original space parameters
                     mean_original = scaler.inverse_transform(mean_scaled.reshape(1, -1))[0]
@@ -315,10 +346,13 @@ def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_ou
                 textstr = f'Filtering Statistics:\n'
                 textstr += f'P>0.50: {n_filtered_50:,} cells ({pct_filtered_50:.1f}%)\n'
                 textstr += f'P>0.75: {n_filtered_75:,} cells ({pct_filtered_75:.1f}%) [DEFAULT]\n'
+                textstr += f'\nOutlier Removal (for fitting):\n'
+                textstr += f'Residual outliers removed: {cell_quality_stats["outlier_removal"]["n_outliers"]:,} ({cell_quality_stats["outlier_removal"]["pct_outliers"]:.1f}%)\n'
+                textstr += f'IQR bounds: [{cell_quality_stats["outlier_removal"]["residual_bounds"]["lower"]:.2f}, {cell_quality_stats["outlier_removal"]["residual_bounds"]["upper"]:.2f}]\n'
                 textstr += f'\nCluster Parameters:\n'
-                textstr += f'Compromised: {gmm_2d_stats["components"]["compromised"]["mito_mean"]:.1f}% mito, {gmm_2d_stats["components"]["compromised"]["residual_mean"]:.2f} resid\n'
-                textstr += f'Healthy: {gmm_2d_stats["components"]["healthy"]["mito_mean"]:.1f}% mito, {gmm_2d_stats["components"]["healthy"]["residual_mean"]:.2f} resid\n'
-                textstr += f'\nGMM Weights: Comp={gmm_2d_stats["components"]["compromised"]["weight"]:.2f}, Healthy={gmm_2d_stats["components"]["healthy"]["weight"]:.2f}'
+                textstr += f'Compromised: {cell_quality_stats["components"]["compromised"]["mito_mean"]:.1f}% mito, {cell_quality_stats["components"]["compromised"]["residual_mean"]:.2f} resid\n'
+                textstr += f'Healthy: {cell_quality_stats["components"]["healthy"]["mito_mean"]:.1f}% mito, {cell_quality_stats["components"]["healthy"]["residual_mean"]:.2f} resid\n'
+                textstr += f'\nModel Weights: Comp={cell_quality_stats["components"]["compromised"]["weight"]:.2f}, Healthy={cell_quality_stats["components"]["healthy"]["weight"]:.2f}'
                 
                 # Place text box in the right plot
                 ax3.text(0.02, 0.98, textstr, transform=ax3.transAxes,
@@ -327,14 +361,14 @@ def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_ou
                 
                 # Overall title
                 sample_id = adata.obs.get("sample_id", ["unknown"])[0]
-                convergence_text = "Converged" if gmm_2d_stats['converged'] else "Not Converged (Warning)"
-                plt.suptitle(f'GMM Quality Control Debug - Sample: {sample_id} - {convergence_text}\n'
+                convergence_text = "Converged" if cell_quality_stats['converged'] else "Not Converged (Warning)"
+                plt.suptitle(f'Cell Quality Control Debug - Sample: {sample_id} - {convergence_text}\n'
                             f'Total cells: {len(prob_compromised):,} | '
                             f'Color: Red = Compromised, Blue = Healthy', 
                             fontsize=12, fontweight='bold')
                 
                 plt.tight_layout()
-                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                plt.savefig(plot_path, bbox_inches='tight')
                 plt.close()
                 
                 print(f"  Combined debug plot saved to: {plot_path}")
@@ -347,9 +381,10 @@ def save_qc_cell_lists(adata, output_path, config=None, save_plots=True, plot_ou
     
     # Print summary
     print("\nQC summary:")
-    prob_comp = cell_lists['gmm_posterior_prob_compromised']
-    convergence_status = "converged" if gmm_2d_stats['converged'] else "did not converge (using best fit)"
+    prob_comp = cell_lists['posterior_prob_compromised']
+    convergence_status = "converged" if cell_quality_stats['converged'] else "did not converge (using best fit)"
     print(f"  GMM {convergence_status}")
+    print(f"  Outlier removal: {cell_quality_stats['outlier_removal']['n_outliers']:,}/{len(prob_comp):,} cells ({cell_quality_stats['outlier_removal']['pct_outliers']:.1f}%) removed for fitting")
     print(f"  Cells with P(compromised) > 0.50: {(prob_comp > 0.50).sum():,}/{len(prob_comp):,} ({100*(prob_comp > 0.50).mean():.1f}%)")
     print(f"  Cells with P(compromised) > 0.75: {(prob_comp > 0.75).sum():,}/{len(prob_comp):,} ({100*(prob_comp > 0.75).mean():.1f}%)")
     print(f"  Mean P(compromised): {prob_comp.mean():.3f}")

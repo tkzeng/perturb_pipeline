@@ -18,6 +18,9 @@ import scanpy as sc
 plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_palette("husl")
 
+# Set global matplotlib parameters
+plt.rcParams['savefig.dpi'] = 100
+
 def load_cell_calling_results(cell_calling_dir, sample_id):
     """Load cell calling results from saved files."""
     results_dir = Path(cell_calling_dir)
@@ -94,9 +97,10 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
         umis_in_cells_pct = methods_results[method]['umis_in_cells_pct']
         
         if len(cell_barcodes) > 0:
-            # Get indices of cells
-            barcode_to_idx = {bc: i for i, bc in enumerate(adata.obs_names)}
-            cell_indices = [barcode_to_idx[bc] for bc in cell_barcodes if bc in barcode_to_idx]
+            # Get indices of cells using vectorized operations
+            obs_index = pd.Index(adata.obs_names)
+            cell_mask = obs_index.isin(cell_barcodes)
+            cell_indices = np.where(cell_mask)[0].tolist()
             
             if cell_indices:
                 cell_counts = total_counts[cell_indices]
@@ -152,7 +156,7 @@ def create_barcode_rank_plot_by_method(adata, methods_results, sample_id,
     
     plot_filename = 'plot.png'
     full_plot_path = plot_path / plot_filename
-    plt.savefig(full_plot_path, dpi=300, bbox_inches='tight')
+    plt.savefig(full_plot_path, bbox_inches='tight')
     plt.close()
     
     print(f"\nBarcode rank by method plot saved to: {full_plot_path}")
@@ -273,7 +277,7 @@ def create_cell_calling_summary_plot(adata, methods_results, dropletutils_df, sa
     
     plot_filename = 'plot.png'
     full_plot_path = plot_path / plot_filename
-    plt.savefig(full_plot_path, dpi=300, bbox_inches='tight')
+    plt.savefig(full_plot_path, bbox_inches='tight')
     plt.close()
     
     print(f"\nCell calling summary plot saved to: {full_plot_path}")

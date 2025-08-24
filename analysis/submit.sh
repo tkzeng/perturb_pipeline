@@ -59,6 +59,8 @@ DEFAULT_ARGS=(
     # List of allowed rules - comment out any rules you want to skip
     --allowed-rules \
         all \
+        # STAGE 0: Reference preparation \
+        #generate_gene_annotation_table \
         # STAGE 1: Input processing and counting \
         #count_reads \
         #calculate_pool_statistics \
@@ -77,28 +79,32 @@ DEFAULT_ARGS=(
         #kallisto_guide_subsampled \
         # STAGE 5: Post-alignment processing \
         #inspect_bus_files \
-        #filter_and_annotate_sublibrary \
+        filter_and_annotate_sublibrary \
         #calculate_read_statistics \
         # STAGE 6: QC and analysis \
         #fastp_qc \
         cell_calling_analysis \
         cell_calling_plots \
         generate_qc_cell_lists \
-        calculate_qc_metrics_stratified \
-        #umi_saturation_analysis \
-        #umi_saturation_analysis_guide \
+        calculate_gmm_thresholds \
+        calculate_qc_metrics_sample \
+        calculate_qc_metrics_biological \
+        calculate_qc_metrics_well \
+        umi_saturation_analysis \
+        umi_saturation_analysis_guide \
         # STAGE 7: Consolidation and visualization \
         consolidate_qc_metrics \
         visualize_consolidated_qc \
-        #process_pool_metrics \
+        process_pool_metrics \
         # STAGE 8: Final outputs \
-        generate_qc_report \
+        generate_preprocessing_report \
         # DOWNSTREAM PIPELINE (from downstream.smk) \
         # Note: To run these, use: snakemake -s downstream.smk ... \
         combine_sublibraries \
         standard_analyses \
         plot_standard_analyses_umap \
-        generate_final_report
+        #pseudobulk_tmm \
+        generate_downstream_report
 )
 
 # If user didn't specify --jobs, add default

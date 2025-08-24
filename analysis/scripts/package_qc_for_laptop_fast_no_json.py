@@ -20,8 +20,8 @@ import io
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Package QC outputs for laptop viewing")
-    parser.add_argument('--input-file-list', required=True,
-                        help='File containing list of input files to package')
+    parser.add_argument('--qc-report-dir', required=True,
+                        help='Path to QC report directory (contains plots/ and data/ subdirectories)')
     parser.add_argument('--sample-info', required=True,
                         help='Path to sample_info.xlsx')
     parser.add_argument('--output-archive', required=True,
@@ -73,10 +73,6 @@ def create_text_file(arcname, content):
 def create_archive_directly(args):
     """Create tar.gz archive directly without intermediate copying"""
     
-    # Read input file list
-    with open(args.input_file_list, 'r') as f:
-        input_files = [line.strip() for line in f if line.strip()]
-    
     # Parse filters
     per_cell_method_filter = args.per_cell_method_filter
     allowed_cutoffs = set(args.guide_cutoff_filter.split(',')) if args.guide_cutoff_filter else None
@@ -87,26 +83,27 @@ def create_archive_directly(args):
     if allowed_cutoffs:
         print(f"  Filtering guide plots to cutoffs: {allowed_cutoffs}")
     
-    # Categorize files and expand directories
+    # Scan QC report directory for all plots and data
+    qc_report_dir = Path(args.qc_report_dir)
+    if not qc_report_dir.exists():
+        raise FileNotFoundError(f"QC report directory not found: {qc_report_dir}")
+    
     plot_files = []
     data_files = []
     
-    for file_path in input_files:
-        path = Path(file_path)
-        if path.is_dir():
-            # Expand directory to include all files within
-            for sub_file in path.rglob('*'):
-                if sub_file.is_file():
-                    if 'plots' in str(sub_file):
-                        plot_files.append(str(sub_file))
-                    elif 'data' in str(sub_file):
-                        data_files.append(str(sub_file))
-        else:
-            # Regular file
-            if 'plots' in file_path:
-                plot_files.append(file_path)
-            elif 'data' in file_path:
-                data_files.append(file_path)
+    # Find all files in plots/ and data/ subdirectories
+    plots_dir = qc_report_dir / 'plots'
+    data_dir = qc_report_dir / 'data'
+    
+    if plots_dir.exists():
+        for plot_file in plots_dir.rglob('*'):
+            if plot_file.is_file() and not plot_file.name.startswith('.'):
+                plot_files.append(str(plot_file))
+    
+    if data_dir.exists():
+        for data_file in data_dir.rglob('*'):
+            if data_file.is_file() and not data_file.name.startswith('.'):
+                data_files.append(str(data_file))
     
     # Count files before filtering
     total_plots = len(plot_files)
@@ -284,7 +281,7 @@ def main():
     args = parse_args()
     
     print("=== QC Dashboard Packaging (No JSON Version) ===")
-    print(f"Input file list: {args.input_file_list}")
+    print(f"QC report directory: {args.qc_report_dir}")
     print(f"Output archive: {args.output_archive}")
     
     # Create archive directly

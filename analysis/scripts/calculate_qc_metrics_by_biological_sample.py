@@ -2,6 +2,10 @@
 """
 Calculate comprehensive QC metrics at three stratification levels.
 
+TODO: Refactor this file - it's getting long (1500+ lines)
+- Could split plotting functions into a separate qc_plotting_helpers.py module
+- plot_per_cell_distributions() is 400+ lines and could be broken up
+
 This script loads the annotated h5ad file and cell calling results to compute metrics
 at different stratification levels based on the --stratify-by parameter.
 
@@ -31,6 +35,7 @@ Stratification levels (--stratify-by parameter):
 import argparse
 import os
 import sys
+import gc
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -38,16 +43,20 @@ import scanpy as sc
 import yaml
 import scipy.sparse
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import seaborn as sns
 from datetime import datetime
-from scipy.stats import median_abs_deviation
+from scipy.stats import median_abs_deviation, poisson, norm, pearsonr
+
+# Set global matplotlib parameters
+plt.rcParams['savefig.dpi'] = 100
 # Import shared guide utility function
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.pipeline_utils import calculate_guides_per_cell, calculate_guide_metrics_for_cells
+from scripts.guide_analysis import apply_guide_threshold, get_cutoff_suffix, load_guide_reference, calculate_guide_metrics_for_barcodes, get_threshold_for_spec, get_cutoff_labels
 
 
-# Removed calculate_2d_gmm_statistics - moved to generate_qc_cell_lists.py
+# Removed calculate_2d_cell_quality_statistics - moved to generate_qc_cell_lists.py
 
 
 def plot_violin_with_mean(data, x, y, order, ax, log_scale, show_statistics, metric_type):
@@ -157,56 +166,7 @@ def load_cell_barcodes(cell_calling_dir, sample_id):
     return cell_barcodes
 
 
-def load_guide_reference(guide_ref_path):
-    """Load guide reference and create mapping from guide sequence to list of target genes.
-    
-    The multi-gene separator is read from a 'separator' column in the file if present,
-    otherwise defaults to '_AND_' for backwards compatibility.
-    
-    Args:
-        guide_ref_path: Path to the guide reference TSV file
-    """
-    print(f"Loading guide reference from: {guide_ref_path}")
-    
-    # Read the TSV file
-    guide_df = pd.read_csv(guide_ref_path, sep='\t')
-    
-    # Get separator from file if present, otherwise use default
-    if 'separator' in guide_df.columns:
-        # Get the first non-null separator value
-        separator_values = guide_df['separator'].dropna().unique()
-        if len(separator_values) > 0:
-            multi_gene_separator = str(separator_values[0])
-            print(f"Using multi-gene separator from file: '{multi_gene_separator}'")
-        else:
-            multi_gene_separator = '_AND_'
-            print(f"No separator specified in file, using default: '{multi_gene_separator}'")
-    else:
-        multi_gene_separator = '_AND_'
-        print(f"No separator column in file, using default: '{multi_gene_separator}'")
-    
-    # Create mapping from guide sequence to list of genes
-    guide_to_genes = {}
-    
-    for _, row in guide_df.iterrows():
-        guide_id = row['ID']  # Use ID instead of sequence
-        gene_str = row['gene']
-        
-        # Skip if gene is NaN or empty
-        if pd.isna(gene_str) or gene_str == '':
-            continue
-            
-        # Split multi-gene targets if separator is configured
-        if multi_gene_separator and multi_gene_separator in gene_str:
-            genes = gene_str.split(multi_gene_separator)
-        else:
-            genes = [gene_str]
-        
-        guide_to_genes[guide_id] = genes
-    
-    print(f"Loaded {len(guide_to_genes)} guide IDs mapping to {len(set(sum(guide_to_genes.values(), [])))} unique genes")
-    
-    return guide_to_genes
+# load_guide_reference moved to scripts/guide_analysis.py
 
 
 def calculate_metrics_for_barcodes(adata, barcode_set, is_cell=True):
@@ -254,64 +214,7 @@ def calculate_metrics_for_barcodes(adata, barcode_set, is_cell=True):
     return metrics
 
 
-def calculate_guide_metrics_for_barcodes(adata, barcode_set, guide_to_genes=None, cutoffs=None):
-    """Calculate guide metrics for a given set of barcodes at multiple cutoffs."""
-    if cutoffs is None:
-        raise ValueError("Guide cutoffs must be provided")
-    
-    # Convert barcode_set to list for the unified function
-    if barcode_set:
-        barcode_list = list(barcode_set)
-    else:
-        # Empty set - no cells
-        barcode_list = []
-    
-    if len(barcode_list) == 0:
-        # Return empty metrics when no barcodes are available
-        metrics = {
-            'guide_umis_per_cell': 0
-        }
-        # Add metrics for each cutoff matching the expected format
-        if cutoffs:
-            for cutoff in cutoffs:
-                metrics[f'guides_per_cell_cutoff{cutoff}'] = 0
-                metrics[f'fraction_cells_with_guides_cutoff{cutoff}'] = 0.0
-                metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = 0
-                metrics[f'total_guides_detected_cutoff{cutoff}'] = 0
-                metrics[f'total_guide_detections_cutoff{cutoff}'] = 0
-                metrics[f'total_targeted_genes_cutoff{cutoff}'] = 0
-        return metrics
-    
-    # Extract guide data from adata
-    # Create a temporary AnnData with just guide counts
-    guide_adata = sc.AnnData(X=adata.obsm['guide_counts'])
-    guide_adata.obs_names = adata.obs_names
-    if 'guide_names' in adata.uns:
-        guide_adata.uns['guide_names'] = adata.uns['guide_names']
-    
-    # Use the unified function
-    unified_metrics = calculate_guide_metrics_for_cells(
-        guide_adata=guide_adata,
-        cell_barcodes=barcode_list,
-        guide_cutoffs=cutoffs,
-        guide_to_genes=guide_to_genes
-    )
-    
-    # Map the unified metrics to the expected format
-    # The unified function returns more detailed metrics, extract what we need
-    metrics = {
-        'guide_umis_per_cell': unified_metrics['guide_umis_per_cell']
-    }
-    
-    for cutoff in cutoffs:
-        metrics[f'guides_per_cell_cutoff{cutoff}'] = unified_metrics[f'guides_per_cell_cutoff{cutoff}']
-        metrics[f'fraction_cells_with_guides_cutoff{cutoff}'] = unified_metrics[f'fraction_cells_with_guides_cutoff{cutoff}']
-        metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = unified_metrics[f'umis_per_guide_per_cell_cutoff{cutoff}']
-        metrics[f'total_guides_detected_cutoff{cutoff}'] = unified_metrics[f'total_guides_detected_cutoff{cutoff}']
-        metrics[f'total_guide_detections_cutoff{cutoff}'] = unified_metrics[f'total_guide_detections_cutoff{cutoff}']
-        metrics[f'total_targeted_genes_cutoff{cutoff}'] = unified_metrics[f'total_targeted_genes_cutoff{cutoff}']
-    
-    return metrics
+# calculate_guide_metrics_for_barcodes moved to scripts/guide_analysis.py
 
 
 def calculate_cell_specific_guide_overlap(adata, cell_barcodes):
@@ -347,8 +250,20 @@ def calculate_cell_specific_guide_overlap(adata, cell_barcodes):
     return percentage
 
 
-def calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, group_name, guide_to_genes=None, guide_cutoffs=None, guide_total_reads=None):
-    """Calculate all metrics for a specific group (sample/biological sample/well)."""
+def calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, group_name, guide_to_genes=None, guide_cutoffs=None, guide_total_reads=None, mixture_metrics=None, qc_cell_lists_df=None, default_method=None, stratify_by='biological_sample'):
+    """Calculate all metrics for a specific group (sample/biological sample/well).
+    
+    Args:
+        adata: AnnData object
+        cell_barcodes: Dict of cell barcodes by method
+        group_mask: Boolean mask for this group
+        total_reads: Total reads for the sample
+        group_name: Name of the group (e.g., 'Overall', biological sample name, well name)
+        guide_to_genes: Dictionary mapping guide names to gene names
+        guide_cutoffs: List of guide count cutoffs
+        guide_total_reads: Total guide reads (only for sample level)
+        mixture_metrics: Dict of mixture model metrics by method
+    """
     # Initialize results dictionary
     results = {}
     
@@ -366,7 +281,7 @@ def calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, g
         noncell_metrics = calculate_metrics_for_barcodes(adata[group_mask], group_barcodes, is_cell=False)
         
         # Calculate guide metrics for cells
-        guide_metrics = calculate_guide_metrics_for_barcodes(adata[group_mask], group_barcodes, guide_to_genes, guide_cutoffs)
+        guide_metrics = calculate_guide_metrics_for_barcodes(adata[group_mask], group_barcodes, guide_to_genes, guide_cutoffs, stratify_by, method)
         
         # Calculate reads per UMI for cells
         # Note: For biological samples, we can't calculate a meaningful reads_per_umi
@@ -426,25 +341,94 @@ def calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, g
             guide_overlap_pct = calculate_cell_specific_guide_overlap(adata[group_mask], group_barcodes)
             results[f'guide_umis_in_cells_pct_{method}'] = guide_overlap_pct
         
-        for cutoff in guide_cutoffs:
-            results[f'guides_per_cell_cutoff{cutoff}_{method}'] = guide_metrics[f'guides_per_cell_cutoff{cutoff}']
-            results[f'fraction_cells_with_guides_cutoff{cutoff}_{method}'] = guide_metrics[f'fraction_cells_with_guides_cutoff{cutoff}']
-            results[f'umis_per_guide_per_cell_cutoff{cutoff}_{method}'] = guide_metrics[f'umis_per_guide_per_cell_cutoff{cutoff}']
+        for cutoff_spec in guide_cutoffs:
+            suffix = get_cutoff_suffix(cutoff_spec)
+            results[f'guides_per_cell_{suffix}_{method}'] = guide_metrics[f'guides_per_cell_{suffix}']
+            results[f'fraction_cells_with_guides_{suffix}_{method}'] = guide_metrics[f'fraction_cells_with_guides_{suffix}']
+            results[f'umis_per_guide_per_cell_{suffix}_{method}'] = guide_metrics[f'umis_per_guide_per_cell_{suffix}']
             
             # Guide diversity
-            results[f'total_guides_detected_cutoff{cutoff}_{method}'] = guide_metrics[f'total_guides_detected_cutoff{cutoff}']
-            results[f'total_guide_detections_cutoff{cutoff}_{method}'] = guide_metrics[f'total_guide_detections_cutoff{cutoff}']
-            results[f'total_targeted_genes_cutoff{cutoff}_{method}'] = guide_metrics[f'total_targeted_genes_cutoff{cutoff}']
+            results[f'total_guides_detected_{suffix}_{method}'] = guide_metrics[f'total_guides_detected_{suffix}']
+            results[f'total_guide_detections_{suffix}_{method}'] = guide_metrics[f'total_guide_detections_{suffix}']
+            results[f'total_targeted_genes_{suffix}_{method}'] = guide_metrics[f'total_targeted_genes_{suffix}']
+        
+        # Add mixture model metrics if available
+        if mixture_metrics is not None:
+            metrics = None
+            if method in mixture_metrics:
+                metrics = mixture_metrics[method]
+            elif f"{method}_{group_name}" in mixture_metrics:
+                metrics = mixture_metrics[f"{method}_{group_name}"]
+            
+            if metrics:
+                # Add posterior thresholds for all levels
+                posterior_thresholds = metrics.get('posterior_thresholds', {})
+                for level, threshold in posterior_thresholds.items():
+                    results[f'guide_posterior_threshold_{level}pct_{method}'] = threshold
+                
+                # Add other mixture metrics
+                results[f'guide_mixture_mean_log_likelihood_{method}'] = metrics.get('mean_log_likelihood', None)
+                results[f'guide_mixture_lambda_{method}'] = metrics.get('lambda', None)
+                results[f'guide_mixture_weight_poisson_{method}'] = metrics.get('weight_poisson', None)
+                results[f'guide_mixture_gaussian_mean_{method}'] = metrics.get('gaussian_mean_umis', None)
+                results[f'guide_mixture_gaussian_median_{method}'] = metrics.get('gaussian_median_umis', None)
+                results[f'guide_mixture_fraction_gaussian_50pct_{method}'] = metrics.get('fraction_gaussian_50pct', None)
+    
+    # Add percentage of compromised cells for default method
+    if qc_cell_lists_df is not None and default_method is not None:
+        prob_compromised = qc_cell_lists_df['posterior_prob_compromised']
+        pct_compromised = (prob_compromised > 0.50).mean() * 100
+        results[f'pct_compromised_cells_50_{default_method}'] = pct_compromised
+    
+    # Add GMM threshold values for each method
+    # The thresholds are the same for all cells in the group, so we just need to get one value
+    for method, method_barcodes in cell_barcodes.items():
+        # Get cells that are both in this method AND this group
+        method_mask = adata.obs.index.isin(method_barcodes)
+        combined_mask = method_mask & group_mask
+        
+        if np.sum(combined_mask) > 0:
+            # Get the first cell's thresholds (all cells in group have same value)
+            first_cell_idx = np.where(combined_mask)[0][0]
+            
+            # Check for GMM threshold columns
+            for col in adata.obs.columns:
+                if col.startswith('gmm_') and (col.endswith('_sample') or col.endswith('_biosample')):
+                    # Get the threshold value for this group
+                    threshold_value = adata.obs.iloc[first_cell_idx][col]
+                    
+                    # Only add if it's a valid threshold (not -1)
+                    if threshold_value > 0:
+                        # Add as a metric with the method suffix
+                        # e.g., gmm_50_sample_threshold_BarcodeRanks_Knee
+                        results[f'{col}_threshold_{method}'] = threshold_value
     
     return results
 
 
-def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, output_dir, sample_id, source, processing, guide_cutoffs=None, pool=None, read_stats=None):
-    """Generate violin plots for per-cell metrics as individual PNG files."""
+    if analysis_result is not None:
+        return analysis_result['posterior_thresholds']
+    return {}
+
+
+# get_threshold_for_spec and get_cutoff_labels moved to scripts/guide_analysis.py
+
+
+def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, output_dir, sample_id, source, processing, guide_cutoffs, pool, read_stats, plot_method_filter):
+    """Generate violin plots for per-cell metrics as individual PNG files.
+    
+    Note: Assumes GMM threshold columns are already in adata.obs (e.g., gmm_50_sample, gmm_75_biosample)
+    
+    Returns:
+        dict: Mixture model metrics for each method and group
+    """
+    # Initialize dictionary to store mixture metrics
+    mixture_metrics = {}
+    
     # Skip plotting for wells (too many groups)
     if stratify_by == 'well':
         print("Skipping per-cell distribution plots for well-level analysis (too many groups)")
-        return
+        return mixture_metrics
     
     # Use provided plot directory
     plot_dir = Path(output_dir)
@@ -465,11 +449,20 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
     
     # Check if guide data exists
     has_guides = 'guide_counts' in adata.obsm
-    if has_guides and guide_cutoffs is None:
-        raise ValueError("Guide cutoffs must be provided when guide data exists")
+    # guide_cutoffs is always required, caller must handle this
+    
+    # Determine which methods to plot
+    if plot_method_filter == "all":
+        methods_to_plot = cell_barcodes.items()
+        print(f"  Plotting all {len(cell_barcodes)} methods")
+    elif plot_method_filter in cell_barcodes:
+        methods_to_plot = [(plot_method_filter, cell_barcodes[plot_method_filter])]
+        print(f"  Plotting only method: {plot_method_filter}")
+    else:
+        raise ValueError(f"Method '{plot_method_filter}' not found. Available: {', '.join(cell_barcodes.keys())}")
     
     # Process each cell calling method
-    for method, method_barcodes in cell_barcodes.items():
+    for method, method_barcodes in methods_to_plot:
         print(f"  Plotting distributions for {method}...")
         
         # Skip if no cells for this method
@@ -581,7 +574,7 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 
                 filename = "plot.png"
                 filepath = metric_dir / filename
-                plt.savefig(filepath, dpi=300, bbox_inches='tight')
+                plt.savefig(filepath, bbox_inches='tight')
                 plt.close()
                 
                 
@@ -589,8 +582,12 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
         
         # Plot guide metrics if available
         if has_guides:
-            for cutoff in guide_cutoffs:
-                # Calculate guides per cell for this cutoff
+            # Iterate through each cutoff specification from the config
+            for cutoff_spec in guide_cutoffs:
+                # Get file suffix and plot label
+                cutoff_suffix, plot_title_suffix = get_cutoff_labels(cutoff_spec)
+                
+                # Calculate guides per cell for this cutoff specification
                 guides_per_cell_data = []
                 guides_per_cell_labels = []
                 guides_group_means = {}
@@ -598,8 +595,10 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 for i, (data, label) in enumerate(zip(group_data, group_labels)):
                     # Get guide counts for these cells
                     guide_counts = data.obsm['guide_counts']
-                    # Convert to binary (1 if count >= cutoff, 0 otherwise)
-                    binary_guides = (guide_counts >= cutoff).astype(int)
+                    
+                    # Apply threshold using helper function
+                    binary_guides = apply_guide_threshold(guide_counts, cutoff_spec, data.obs, stratify_by, method)
+                    
                     # Sum guides per cell
                     guides_per_cell = np.array(binary_guides.sum(axis=1)).flatten()
                     
@@ -630,16 +629,16 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 
                     # Customize plot
                     ax.set_xlabel(stratify_by.replace('_', ' ').title())
-                    ax.set_ylabel(f'Guides per cell (cutoff={cutoff})' + (' (log scale)' if scale_type == 'log' else ''))
+                    ax.set_ylabel(f'Guides per cell ({plot_title_suffix})' + (' (log scale)' if scale_type == 'log' else ''))
                     
                     # Add guide read count and cell count to title
                     n_cells = len(method_barcodes)
                     if read_stats and 'guide_total_reads' in read_stats:
                         guide_total_reads = read_stats['guide_total_reads']
                         guide_reads_per_cell = guide_total_reads // n_cells if n_cells > 0 else 0
-                        title = f'Guides per Cell Distribution (cutoff={cutoff}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Guide reads/cell: {guide_reads_per_cell:,} | Percentiles: 1%-99%'
+                        title = f'Guides per Cell Distribution ({plot_title_suffix}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Guide reads/cell: {guide_reads_per_cell:,} | Percentiles: 1%-99%'
                     else:
-                        title = f'Guides per Cell Distribution (cutoff={cutoff}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Percentiles: 1%-99%'
+                        title = f'Guides per Cell Distribution ({plot_title_suffix}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Percentiles: 1%-99%'
                     ax.set_title(title)
                     
                     # Rotate x labels if many groups
@@ -650,14 +649,14 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                     plt.tight_layout()
                     
                     # Save plot with clean directory structure
-                    # per_cell/{source}_{processing}/{pool}/{sample}/guides_per_cell_cutoff{cutoff}/{method}/{stratify_by}/plot_{scale_type}.png
-                    metric_name = f"guides_per_cell_cutoff{cutoff}"
+                    # per_cell/{source}_{processing}/{pool}/{sample}/guides_per_cell_{cutoff_suffix}/{method}/{stratify_by}/plot_{scale_type}.png
+                    metric_name = f"guides_per_cell_{cutoff_suffix}"
                     metric_dir = plot_dir / metric_name / method / stratify_by / scale_type
                     metric_dir.mkdir(parents=True, exist_ok=True)
                     
                     filename = "plot.png"
                     filepath = metric_dir / filename
-                    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+                    plt.savefig(filepath, bbox_inches='tight')
                     plt.close()
                     
                     
@@ -727,14 +726,17 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 
                 filename = "plot.png"
                 filepath = metric_dir / filename
-                plt.savefig(filepath, dpi=300, bbox_inches='tight')
+                plt.savefig(filepath, bbox_inches='tight')
                 plt.close()
                 
                 
                 print(f"    Saved {filename} ({scale_type} scale)")
             
             # Plot UMIs per guide per cell for each cutoff
-            for cutoff in guide_cutoffs:
+            for cutoff_spec in guide_cutoffs:
+                # Get file suffix and plot label
+                cutoff_suffix, plot_title_suffix = get_cutoff_labels(cutoff_spec)
+                
                 umis_per_guide_data = []
                 umis_per_guide_labels = []
                 umis_per_guide_means = {}
@@ -742,8 +744,10 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                 for i, (data, label) in enumerate(zip(group_data, group_labels)):
                     # Get guide counts for these cells
                     guide_counts = data.obsm['guide_counts']
-                    # Convert to binary (1 if count >= cutoff, 0 otherwise)
-                    binary_guides = (guide_counts >= cutoff).astype(int)
+                    
+                    # Apply threshold using helper function
+                    binary_guides = apply_guide_threshold(guide_counts, cutoff_spec, data.obs, stratify_by, method)
+                    
                     # Sum guides per cell
                     guides_per_cell = np.array(binary_guides.sum(axis=1)).flatten()
                     
@@ -797,16 +801,16 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                     
                         # Customize plot
                         ax.set_xlabel(stratify_by.replace('_', ' ').title())
-                        ax.set_ylabel(f'UMIs per guide per cell (cutoff={cutoff})' + (' (log scale)' if scale_type == 'log' else ''))
+                        ax.set_ylabel(f'UMIs per guide per cell ({plot_title_suffix})' + (' (log scale)' if scale_type == 'log' else ''))
                         
                         # Add guide read count and cell count to title
                         n_cells = len(method_barcodes)
                         if read_stats and 'guide_total_reads' in read_stats:
                             guide_total_reads = read_stats['guide_total_reads']
                             guide_reads_per_cell = guide_total_reads // n_cells if n_cells > 0 else 0
-                            title = f'UMIs per Guide per Cell Distribution (cutoff={cutoff}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Guide reads/cell: {guide_reads_per_cell:,} | Percentiles: 1%-99%'
+                            title = f'UMIs per Guide per Cell Distribution ({plot_title_suffix}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Guide reads/cell: {guide_reads_per_cell:,} | Percentiles: 1%-99%'
                         else:
-                            title = f'UMIs per Guide per Cell Distribution (cutoff={cutoff}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Percentiles: 1%-99%'
+                            title = f'UMIs per Guide per Cell Distribution ({plot_title_suffix}) by {stratify_by.replace("_", " ").title()} ({method}) - {scale_type.capitalize()} Scale\nCells: {n_cells:,} | Percentiles: 1%-99%'
                         ax.set_title(title)
                         
                         # Rotate x labels if many groups
@@ -818,19 +822,20 @@ def plot_per_cell_distributions(adata, cell_barcodes, groups, stratify_by, outpu
                         
                         # Save plot with category subdirectory
                         # Save plot with clean directory structure
-                        metric_name = f"umis_per_guide_per_cell_cutoff{cutoff}"
+                        metric_name = f"umis_per_guide_per_cell_{cutoff_suffix}"
                         metric_dir = plot_dir / metric_name / method / stratify_by / scale_type
                         metric_dir.mkdir(parents=True, exist_ok=True)
                         
                         filename = "plot.png"
                         filepath = metric_dir / filename
-                        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+                        plt.savefig(filepath, bbox_inches='tight')
                         plt.close()
                         
                         
                         print(f"    Saved {filename} ({scale_type} scale)")
     
     print("Per-cell distribution plots completed")
+    return mixture_metrics
 
 
 def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot_dir, 
@@ -858,8 +863,6 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
         metric_name: Name for output directory
         plot_title_suffix: Additional text for plot title
     """
-    from scipy.stats import pearsonr
-    import matplotlib.cm as cm
     
     # Ensure plot directory exists
     plot_dir = Path(plot_dir)
@@ -917,10 +920,10 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
         for i, (data, label) in enumerate(zip(group_data, group_labels)):
             ax = axes[i]
             
-            # Get the data
-            x_values = x_values_func(data)
-            y_values = y_values_func(data)
-            color_values = color_values_func(data)
+            # Get the data - always pass method for consistency
+            x_values = x_values_func(data, method)
+            y_values = y_values_func(data, method)
+            color_values = color_values_func(data, method)
             
             # Sample if too many points
             max_points = 10000
@@ -999,14 +1002,14 @@ def _plot_umi_scatter_generic(adata, cell_barcodes, sample_id, stratify_by, plot
         
         filename = "plot.png"
         filepath = metric_dir / filename
-        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        plt.savefig(filepath, bbox_inches='tight')
         plt.close()
         
         print(f"    Saved {metric_name}/{method}/{stratify_by}/linear/{filename}")
 
 
-def plot_umi_vs_genes_with_gmm(adata, cell_barcodes, sample_id, stratify_by, plot_dir, qc_cell_lists_path=None):
-    """Create side-by-side UMI vs genes plots: one colored by mito%, one by GMM posterior.
+def plot_umi_vs_genes_with_cell_quality(adata, cell_barcodes, sample_id, stratify_by, plot_dir, qc_cell_lists_path=None):
+    """Create side-by-side UMI vs genes plots: one colored by mito%, one by cell quality posterior.
     
     Args:
         adata: AnnData object
@@ -1025,11 +1028,11 @@ def plot_umi_vs_genes_with_gmm(adata, cell_barcodes, sample_id, stratify_by, plo
         sample_id=sample_id,
         stratify_by=stratify_by,
         plot_dir=plot_dir,
-        x_values_func=lambda data: data.obs['total_counts'].values,
+        x_values_func=lambda data, method: data.obs['total_counts'].values,
         x_label='Total UMI Counts',
-        y_values_func=lambda data: data.obs['n_genes_by_counts'].values,
+        y_values_func=lambda data, method: data.obs['n_genes_by_counts'].values,
         y_label='Number of Genes Detected',
-        color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+        color_values_func=lambda data, method: data.obs['pct_counts_mt'].values,
         color_label='% Mitochondrial',
         color_map='plasma',
         color_vmin=0,
@@ -1044,7 +1047,7 @@ def plot_umi_vs_genes_with_gmm(adata, cell_barcodes, sample_id, stratify_by, plo
 def plot_umi_vs_guides_scatter(adata, cell_barcodes, sample_id, stratify_by, plot_dir, source, processing, guide_cutoffs, pool=None):
     """Create scatter plots of UMI counts vs number of guides at different cutoffs, colored by pct mitochondrial."""
     print("\nCreating UMI vs guides scatter plots colored by % mitochondrial...")
-    print(f"  Creating scatter plots for {len(cell_barcodes)} methods with {len(guide_cutoffs)} cutoffs: {guide_cutoffs}")
+    print(f"  Creating scatter plots for {len(cell_barcodes)} methods with {len(guide_cutoffs)} cutoffs")
     
     # Check if guide data exists
     if 'guide_counts' not in adata.obsm:
@@ -1052,15 +1055,16 @@ def plot_umi_vs_guides_scatter(adata, cell_barcodes, sample_id, stratify_by, plo
         return
     
     # Create plots for each cutoff
-    for cutoff in guide_cutoffs:
-        print(f"\n  Processing cutoff={cutoff}...")
+    for cutoff_spec in guide_cutoffs:
+        # Get file suffix and label
+        cutoff_suffix = get_cutoff_suffix(cutoff_spec)
+        cutoff_suffix_display, cutoff_label = get_cutoff_labels(cutoff_spec)
+        print(f"\n  Processing cutoff {cutoff_spec} ({cutoff_label})...")
         
-        def calculate_guides_at_cutoff(data):
+        def calculate_guides_at_cutoff(data, method_name):
             """Calculate number of guides detected at the specified cutoff."""
             guide_counts = data.obsm['guide_counts']
-            # Convert to binary (1 if count >= cutoff, 0 otherwise)
-            binary_guides = (guide_counts >= cutoff).astype(int)
-            # Sum guides per cell
+            binary_guides = apply_guide_threshold(guide_counts, cutoff_spec, data.obs, stratify_by, method_name)
             guides_per_cell = np.array(binary_guides.sum(axis=1)).flatten()
             return guides_per_cell
         
@@ -1070,17 +1074,17 @@ def plot_umi_vs_guides_scatter(adata, cell_barcodes, sample_id, stratify_by, plo
             sample_id=sample_id,
             stratify_by=stratify_by,
             plot_dir=plot_dir,
-            x_values_func=lambda data: data.obs['total_counts'].values,
+            x_values_func=lambda data, method: data.obs['total_counts'].values,
             x_label='Total UMI Counts',
             y_values_func=calculate_guides_at_cutoff,
-            y_label=f'Number of Guides Detected (cutoff={cutoff})',
-            color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+            y_label=f'Number of Guides Detected ({cutoff_label})',
+            color_values_func=lambda data, method: data.obs['pct_counts_mt'].values,
             color_label='% Mitochondrial',
             color_map='plasma',
             color_vmin=0,
             color_vmax=None,
-            metric_name=f'umi_vs_guides_scatter_cutoff{cutoff}',
-            plot_title_suffix=f'Cutoff={cutoff}'
+            metric_name=f'umi_vs_guides_scatter_{cutoff_suffix}',
+            plot_title_suffix=cutoff_label
         )
     
     print("\nUMI vs guides scatter plots completed")
@@ -1104,6 +1108,9 @@ def main():
     parser.add_argument('--processing', required=True, choices=['raw', 'trimmed', 'recovered', 'merged'],
                         help='Processing state (raw, trimmed, recovered, or merged)')
     parser.add_argument('--qc-cell-lists', help='Pre-calculated QC cell lists TSV file (for plotting GMM posteriors)')
+    parser.add_argument('--gmm-thresholds', required=True, help='Pre-calculated GMM thresholds per cell TSV file')
+    parser.add_argument('--threads', type=int, required=True, help='Number of threads/cores to use')
+    parser.add_argument('--per-cell-plot-method', required=True, help='Cell calling method for per-cell distribution plots (use "all" for all methods)')
     
     args = parser.parse_args()
     
@@ -1159,9 +1166,40 @@ def main():
     guide_cutoffs = config['qc_analysis']['guide_cutoffs']
     print(f"Using guide cutoffs: {guide_cutoffs}")
     
+    # Extract posterior levels needed for GMM analysis
+    posterior_levels = [50]  # Always include 50% as default
+    for cutoff_spec in guide_cutoffs:
+        if isinstance(cutoff_spec, str):
+            if cutoff_spec.startswith('gmm_') or cutoff_spec.startswith('posterior_'):
+                if cutoff_spec.startswith('gmm_'):
+                    prob_str = cutoff_spec[4:]
+                else:
+                    prob_str = cutoff_spec[10:]
+                try:
+                    prob_level = int(prob_str)
+                    if prob_level not in posterior_levels:
+                        posterior_levels.append(prob_level)
+                except ValueError:
+                    raise ValueError(f"Invalid posterior probability specification: {cutoff_spec}")
+    
+    print(f"GMM posterior levels to calculate: {sorted(posterior_levels)}")
+    
+    # Get guide mixture model parameters from config
+    mixture_config = config.get('guide_mixture_model', {})
+    min_umi_threshold = mixture_config.get('min_umi_threshold', 2)
+    print(f"Using mixture model parameters: min_umi_threshold={min_umi_threshold}")
+    
     # Load cell barcodes for each method
     print(f"Loading cell barcodes from: {args.cell_calling_dir}")
     cell_barcodes = load_cell_barcodes(args.cell_calling_dir, args.sample_id)
+    
+    # Load QC cell lists for compromised cell percentage calculation
+    qc_cell_lists_df = None
+    default_method = config['cell_calling']['default_method']
+    if args.qc_cell_lists:
+        print(f"Loading QC cell lists from: {args.qc_cell_lists}")
+        qc_cell_lists_df = pd.read_csv(args.qc_cell_lists, sep='\t')
+        print(f"Loaded GMM posteriors for {len(qc_cell_lists_df):,} cells")
     
     # Get unique groups to stratify by
     if args.stratify_by == 'sample':
@@ -1181,10 +1219,41 @@ def main():
         print(f"Found {len(groups)} biological samples")
         group_label = 'biological_sample'
     
+    # Setup plotting parameters
+    source = args.source
+    processing = args.processing
+    plot_dir = Path(args.plot_dir) if args.plot_dir else Path(args.output).parent
+    
+    # Load pre-calculated GMM thresholds
+    threshold_output = Path(args.gmm_thresholds)
+    print(f"\n=== Loading pre-calculated GMM thresholds from {threshold_output} ===")
+    threshold_table = pd.read_csv(threshold_output, sep='\t', index_col=0)
+    
+    # Add threshold columns to full adata.obs for use in plotting
+    for col in threshold_table.columns:
+        # Initialize column with NaN for all cells (means "not applicable")
+        adata.obs[col] = np.nan
+        # Add the threshold values for cells that have them
+        common_indices = adata.obs.index.intersection(threshold_table.index)
+        adata.obs.loc[common_indices, col] = threshold_table.loc[common_indices, col]
+    print(f"Added {len(threshold_table.columns)} threshold columns to adata.obs")
+    
+    # Now generate plots using the pre-calculated thresholds
+    print("\n=== Generating plots and fitting mixture models ===")
+    # Create combined read stats dictionary
+    combined_read_stats = read_stats_df.iloc[0].to_dict()
+    combined_read_stats.update(guide_stats_df.iloc[0].to_dict())
+    
+    mixture_metrics = plot_per_cell_distributions(adata, cell_barcodes, groups, args.stratify_by, 
+                               plot_dir, args.sample_id, source, processing, guide_cutoffs, 
+                               pool=args.pool, read_stats=combined_read_stats,
+                               plot_method_filter=args.per_cell_plot_method)
+    
     # Initialize results list
     all_results = []
     
     # Calculate metrics for each group
+    print("\n=== Calculating metrics ===")
     for group in groups:
         print(f"\nProcessing {group_label}: {group}")
         
@@ -1239,7 +1308,7 @@ def main():
         if args.stratify_by == 'sample' and 'guide_total_reads' in guide_stats_df.columns:
             guide_total_reads = guide_stats_df['guide_total_reads'].iloc[0]
         
-        method_results = calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, group, guide_to_genes, guide_cutoffs, guide_total_reads)
+        method_results = calculate_metrics_for_group(adata, cell_barcodes, group_mask, total_reads, group, guide_to_genes, guide_cutoffs, guide_total_reads, mixture_metrics, qc_cell_lists_df, default_method, args.stratify_by)
         results.update(method_results)
         
         all_results.append(results)
@@ -1271,23 +1340,8 @@ def main():
         n_cells = row[f'n_cells_{first_method}']
         print(f"  {group_name}: {int(n_cells):,} cells ({first_method})")
     
-    # Use provided parameters
-    source = args.source
-    processing = args.processing
-    
-    # Generate per-cell distribution plots
-    plot_dir = Path(args.plot_dir) if args.plot_dir else Path(args.output).parent
-    
-    # Create combined read stats dictionary
-    combined_read_stats = read_stats_df.iloc[0].to_dict()
-    combined_read_stats.update(guide_stats_df.iloc[0].to_dict())
-    
-    plot_per_cell_distributions(adata, cell_barcodes, groups, args.stratify_by, 
-                               plot_dir, args.sample_id, source, processing, guide_cutoffs, 
-                               pool=args.pool, read_stats=combined_read_stats)
-    
-    # Generate UMI vs genes scatter plots (both mito% and GMM posterior if available)
-    plot_umi_vs_genes_with_gmm(adata, cell_barcodes, args.sample_id, args.stratify_by, plot_dir, 
+    # Generate additional UMI vs genes scatter plots (both mito% and cell quality posterior if available)
+    plot_umi_vs_genes_with_cell_quality(adata, cell_barcodes, args.sample_id, args.stratify_by, plot_dir, 
                                 qc_cell_lists_path=args.qc_cell_lists)
     
     # Generate UMI vs guides scatter plots for each cutoff
@@ -1305,11 +1359,11 @@ def main():
             sample_id=args.sample_id,
             stratify_by=args.stratify_by,
             plot_dir=plot_dir,
-            x_values_func=lambda data: data.obs['total_counts'].values,
+            x_values_func=lambda data, method: data.obs['total_counts'].values,
             x_label='Total UMI Counts',
-            y_values_func=lambda data: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
+            y_values_func=lambda data, method: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
             y_label='Guide UMIs',
-            color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+            color_values_func=lambda data, method: data.obs['pct_counts_mt'].values,
             color_label='% Mitochondrial',
             color_map='plasma',
             color_vmin=0,
@@ -1324,15 +1378,18 @@ def main():
         print("\nCreating Guide UMIs vs Number of Guides scatter plots colored by % mitochondrial...")
         print(f"  Creating scatter plots for {len(cell_barcodes)} methods with {len(guide_cutoffs)} cutoffs: {guide_cutoffs}")
         
-        for cutoff in guide_cutoffs:
-            print(f"  Processing cutoff={cutoff}...")
+        for cutoff_spec in guide_cutoffs:
+            # Get file suffix and label
+            cutoff_suffix = get_cutoff_suffix(cutoff_spec)
+            cutoff_suffix_display, cutoff_label = get_cutoff_labels(cutoff_spec)
+            if cutoff_suffix is None:
+                continue
+            print(f"  Processing cutoff {cutoff_spec} ({cutoff_label})...")
             
-            def calculate_guides_at_cutoff(data):
+            def calculate_guides_at_cutoff(data, method_name):
                 """Calculate number of guides detected at the specified cutoff."""
                 guide_counts = data.obsm['guide_counts']
-                # Convert to binary (1 if count >= cutoff, 0 otherwise)
-                binary_guides = (guide_counts >= cutoff).astype(int)
-                # Sum guides per cell
+                binary_guides = apply_guide_threshold(guide_counts, cutoff_spec, data.obs, args.stratify_by, method_name)
                 guides_per_cell = np.array(binary_guides.sum(axis=1)).flatten()
                 return guides_per_cell
             
@@ -1343,24 +1400,23 @@ def main():
                 sample_id=args.sample_id,
                 stratify_by=args.stratify_by,
                 plot_dir=plot_dir,
-                x_values_func=lambda data: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
+                x_values_func=lambda data, method: np.array(data.obsm['guide_counts'].sum(axis=1)).flatten(),
                 x_label='Guide UMIs',
                 y_values_func=calculate_guides_at_cutoff,
-                y_label=f'Number of Guides Detected (cutoff={cutoff})',
-                color_values_func=lambda data: data.obs['pct_counts_mt'].values,
+                y_label=f'Number of Guides Detected ({cutoff_label})',
+                color_values_func=lambda data, method: data.obs['pct_counts_mt'].values,
                 color_label='% Mitochondrial',
                 color_map='plasma',
                 color_vmin=0,
                 color_vmax=None,
-                metric_name=f'guide_umis_vs_num_guides_scatter_cutoff{cutoff}',
-                plot_title_suffix=f'Cutoff={cutoff}'
+                metric_name=f'guide_umis_vs_num_guides_scatter_{cutoff_suffix}',
+                plot_title_suffix=cutoff_label
             )
         
         print("Guide UMIs vs Number of Guides scatter plots completed")
     
     # Clean up memory
     del adata
-    import gc
     gc.collect()
 
 

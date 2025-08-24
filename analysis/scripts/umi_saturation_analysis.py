@@ -21,9 +21,43 @@ from pathlib import Path
 from scipy import sparse
 import scanpy as sc
 from datetime import datetime
+
+# Set global matplotlib parameters
+plt.rcParams['savefig.dpi'] = 100
+
+# Timing utilities
+def timer(func):
+    """Decorator to time function execution"""
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        elapsed = time.time() - start
+        print(f"    ⏱️  {func.__name__}: {elapsed:.2f}s")
+        return result
+    return wrapper
+
+class Timer:
+    """Context manager for timing code blocks"""
+    def __init__(self, name):
+        self.name = name
+        self.start = None
+    
+    def __enter__(self):
+        self.start = time.time()
+        return self
+    
+    def __exit__(self, *args):
+        elapsed = time.time() - self.start
+        print(f"    ⏱️  {self.name}: {elapsed:.2f}s")
 # Import shared guide utility functions
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.pipeline_utils import calculate_guides_per_cell, get_paired_sample, calculate_guide_metrics_for_cells
+from scripts.pipeline_utils import get_paired_sample
+from scripts.guide_analysis import (
+    perform_guide_mixture_analysis, 
+    plot_mixture_analysis,
+    calculate_guide_metrics_for_cells,
+    map_guide_counts_to_gex_barcodes
+)
 
 
 def get_sample_pool_from_id(config, sample_id):
@@ -122,122 +156,205 @@ def calculate_umi_stats(adata, cell_barcodes_dict=None, is_guide=False, guide_cu
     
     # Calculate stats for each cell calling method if provided
     if cell_barcodes_dict:
-        # Create pandas Series for vectorized barcode lookup
-        import pandas as pd
-        barcode_series = pd.Series(range(adata.n_obs), index=adata.obs_names)
-        
         for method, cell_barcode_list in cell_barcodes_dict.items():
-            # Find indices of called cells using vectorized operations
-            cell_indices = barcode_series.reindex(cell_barcode_list).dropna().astype(int).values
+            # Vectorized barcode intersection
+            cell_mask = adata.obs_names.isin(cell_barcode_list)
+            valid_barcodes = adata.obs_names[cell_mask].tolist()
             
-            # For guide samples, use unified function for ALL metrics
-            if is_guide and guide_cutoffs is not None:
-                # Use unified function to calculate metrics for ALL cells
-                guide_metrics = calculate_guide_metrics_for_cells(
-                    guide_adata=adata,
-                    cell_barcodes=cell_barcode_list,
-                    guide_cutoffs=guide_cutoffs,
-                    guide_to_genes=None  # Not needed for basic metrics
+            if len(valid_barcodes) == 0:
+                continue
+            
+            # For guide samples, calculate metrics for all cutoffs
+            if is_guide and guide_cutoffs:
+                # Create a subset adata with only the guide counts for these cells
+                guide_adata_subset = sc.AnnData(
+                    X=adata.obsm['guide_counts'][cell_mask],
+                    obs=adata.obs.loc[valid_barcodes].copy()
                 )
                 
-                # Basic cell stats
+                with Timer(f"    Guide metrics for {method} ({len(valid_barcodes)} cells)"):
+                    guide_metrics = calculate_guide_metrics_for_cells(
+                        guide_adata=guide_adata_subset,
+                        cell_barcodes=valid_barcodes,
+                        guide_cutoffs=guide_cutoffs,
+                        obs_data=adata.obs.loc[valid_barcodes],  # Pass subset of obs matching the cells
+                        method_name=method,
+                        stratify_by='sample'
+                    )
+                
                 stats[f'{method}_n_cells'] = guide_metrics['n_cells_total']
                 stats[f'{method}_mean_umis_per_cell'] = guide_metrics['guide_umis_per_cell']
-                stats[f'{method}_median_umis_per_cell'] = guide_metrics['guide_umis_per_cell']  # Using mean as approximation
+                stats[f'{method}_median_umis_per_cell'] = guide_metrics['guide_umis_per_cell']
                 
-                # For mean guides per cell, use cutoff=1 as proxy for "features per cell"
-                stats[f'{method}_mean_{feature_type}_per_cell'] = guide_metrics['guides_per_cell_cutoff1']
-                stats[f'{method}_median_{feature_type}_per_cell'] = guide_metrics['guides_per_cell_cutoff1']
+                cell_umis = umis_per_barcode[cell_mask]
+                stats[f'{method}_total_umis_in_cells'] = np.sum(cell_umis)
+                stats[f'{method}_fraction_umis_in_cells'] = np.sum(cell_umis) / total_umis
                 
-                # Total UMIs in cells (need to calculate from found cells only)
-                if len(cell_indices) > 0:
-                    cell_umis = umis_per_barcode[cell_indices]
-                    stats[f'{method}_total_umis_in_cells'] = np.sum(cell_umis)
-                    stats[f'{method}_fraction_umis_in_cells'] = np.sum(cell_umis) / total_umis if total_umis > 0 else 0
-                else:
-                    stats[f'{method}_total_umis_in_cells'] = 0
-                    stats[f'{method}_fraction_umis_in_cells'] = 0
-                
-                # Guide-specific metrics for each cutoff
-                for cutoff in guide_cutoffs:
-                    stats[f'{method}_mean_guides_per_cell_cutoff{cutoff}'] = guide_metrics[f'guides_per_cell_cutoff{cutoff}']
-                    stats[f'{method}_median_guides_per_cell_cutoff{cutoff}'] = guide_metrics[f'guides_per_cell_cutoff{cutoff}']
-                    stats[f'{method}_fraction_cells_with_guides_cutoff{cutoff}'] = guide_metrics[f'fraction_cells_with_guides_cutoff{cutoff}']
+                for key, value in guide_metrics.items():
+                    if key.startswith('mean_') or key.startswith('median_') or key.startswith('fraction_') or key.startswith('umis_'):
+                        stats[f'{method}_{key}'] = value
                     
-            elif len(cell_indices) > 0:
-                # For GEX samples, use original approach
-                cell_umis = umis_per_barcode[cell_indices]
-                cell_features = features_per_barcode[cell_indices]
+            else:
+                # For GEX samples, use barcode-based indexing
+                cell_umis = umis_per_barcode[cell_mask]
+                cell_features = features_per_barcode[cell_mask]
                 
-                stats[f'{method}_n_cells'] = len(cell_barcode_list)
+                stats[f'{method}_n_cells'] = len(valid_barcodes)
                 stats[f'{method}_mean_umis_per_cell'] = np.mean(cell_umis)
                 stats[f'{method}_median_umis_per_cell'] = np.median(cell_umis)
                 stats[f'{method}_mean_{feature_type}_per_cell'] = np.mean(cell_features)
                 stats[f'{method}_median_{feature_type}_per_cell'] = np.median(cell_features)
                 stats[f'{method}_total_umis_in_cells'] = np.sum(cell_umis)
-                stats[f'{method}_fraction_umis_in_cells'] = np.sum(cell_umis) / total_umis if total_umis > 0 else 0
-            else:
-                stats[f'{method}_n_cells'] = 0
-                stats[f'{method}_mean_umis_per_cell'] = 0
-                stats[f'{method}_median_umis_per_cell'] = 0
-                stats[f'{method}_mean_{feature_type}_per_cell'] = 0
-                stats[f'{method}_median_{feature_type}_per_cell'] = 0
-                stats[f'{method}_total_umis_in_cells'] = 0
-                stats[f'{method}_fraction_umis_in_cells'] = 0
-                
-                # Add zero values for guide metrics
-                if is_guide:
-                    if guide_cutoffs is None:
-                        raise ValueError("Guide cutoffs must be provided for guide samples")
-                    for cutoff in guide_cutoffs:
-                        stats[f'{method}_mean_guides_per_cell_cutoff{cutoff}'] = 0
-                        stats[f'{method}_median_guides_per_cell_cutoff{cutoff}'] = 0
-                        stats[f'{method}_fraction_cells_with_guides_cutoff{cutoff}'] = 0
+                stats[f'{method}_fraction_umis_in_cells'] = np.sum(cell_umis) / total_umis
     
     # Clean up intermediate arrays
     del umis_per_barcode, features_per_barcode
-    if cell_barcodes_dict and 'barcode_series' in locals():
-        del barcode_series
     
     return stats
 
 
-def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_dict, source, processing, scratch_dir, is_guide=False, guide_cutoffs=None):
+def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_dict, source, processing, scratch_dir, is_guide=False, calculate_gmm=False, guide_cutoffs=None, gmm_plot_dir=None, n_threads=4):
     """Run UMI saturation analysis by loading pre-generated subsampled matrices."""
+    analysis_start = time.time()
+    print(f"\n{'='*60}")
+    print(f"Starting saturation analysis for {sample_id}")
+    print(f"{'='*60}")
+    
     saturation_data = []
+    gmm_thresholds_by_depth = {}  # Store GMM thresholds at each depth
     
     # Process each saturation fraction
     for fraction in saturation_points:
-        print(f"Processing fraction {fraction}...")
+        print(f"\nProcessing fraction {fraction}...")
+        fraction_start = time.time()
         
-        if fraction == 1.0:
-            # Use existing full matrix (unfiltered)
-            try:
-                if is_guide:
-                    kb_result_dir = Path(f"{scratch_dir}/{sample_id}/kb_guide_{source}_{processing}")
-                else:
-                    kb_result_dir = Path(f"{scratch_dir}/{sample_id}/kb_all_{source}_{processing}")
+        if is_guide:
+            sample_info_file = config['sample_info_file']
+            paired_gex_sample = get_paired_sample(sample_id, 'guide', sample_info_file)
+            
+            if fraction == 1.0:
+                gex_dir = Path(f"{scratch_dir}/{paired_gex_sample}/kb_all_{source}_{processing}")
+                with Timer("Loading GEX data"):
+                    gex_adata = load_adata_all_barcodes(gex_dir, False)
                 
-                adata = load_adata_all_barcodes(kb_result_dir, is_guide)
-                print(f"  Using existing full matrix from {kb_result_dir}")
-            except Exception as e:
-                raise RuntimeError(f"Failed to load existing matrix for fraction 1.0: {e}. Cannot proceed with saturation analysis.") from e
+                guide_dir = Path(f"{scratch_dir}/{sample_id}/kb_guide_{source}_{processing}")
+                with Timer("Loading guide data"):
+                    guide_adata = load_adata_all_barcodes(guide_dir, True)
+                
+                with Timer("Mapping guide to GEX barcodes"):
+                    mapped_counts = map_guide_counts_to_gex_barcodes(guide_adata, gex_adata.obs_names)
+                
+                adata = gex_adata.copy()
+                adata.obsm['guide_counts'] = mapped_counts
+                print(f"  Mapped guide data to {len(gex_adata)} GEX barcodes")
+            else:
+                gex_subsample_dir = f"{scratch_dir}/tmp/umi_sat_{paired_gex_sample}-{fraction}/kb_all"
+                with Timer("Loading GEX data"):
+                    gex_adata = load_adata_all_barcodes(Path(gex_subsample_dir), False)
+                
+                guide_subsample_dir = f"{scratch_dir}/tmp/umi_sat_{sample_id}-{fraction}/kb_guide"
+                with Timer("Loading guide data"):
+                    guide_adata = load_adata_all_barcodes(Path(guide_subsample_dir), True)
+                
+                with Timer("Mapping guide to GEX barcodes"):
+                    mapped_counts = map_guide_counts_to_gex_barcodes(guide_adata, gex_adata.obs_names)
+                
+                adata = gex_adata.copy()
+                adata.obsm['guide_counts'] = mapped_counts
+                print(f"  Mapped guide data to {len(gex_adata)} GEX barcodes")
         else:
-            # Load pre-generated subsampled matrix (unfiltered)
-            try:
-                # Temp is always under scratch/tmp
-                if is_guide:
-                    subsample_dir = f"{scratch_dir}/tmp/umi_sat_{sample_id}-{fraction}/kb_guide"
-                else:
-                    subsample_dir = f"{scratch_dir}/tmp/umi_sat_{sample_id}-{fraction}/kb_all"
-                
-                adata = load_adata_all_barcodes(Path(subsample_dir), is_guide)
+            if fraction == 1.0:
+                kb_result_dir = Path(f"{scratch_dir}/{sample_id}/kb_all_{source}_{processing}")
+                adata = load_adata_all_barcodes(kb_result_dir, False)
+                print(f"  Using existing full matrix from {kb_result_dir}")
+            else:
+                subsample_dir = f"{scratch_dir}/tmp/umi_sat_{sample_id}-{fraction}/kb_all"
+                adata = load_adata_all_barcodes(Path(subsample_dir), False)
                 print(f"  Loaded subsampled matrix from {subsample_dir}")
-            except Exception as e:
-                raise RuntimeError(f"Failed to load subsampled matrix for fraction {fraction}: {e}. Make sure Snakemake has generated the subsampled data.") from e
+        
+        if calculate_gmm and is_guide and guide_cutoffs:
+            with Timer("GMM threshold calculation"):
+                # Extract posterior levels from guide cutoffs
+                posterior_levels = []
+                for cutoff in guide_cutoffs:
+                    if isinstance(cutoff, str) and (cutoff.startswith('gmm_') or cutoff.startswith('posterior_')):
+                        if cutoff.startswith('gmm_'):
+                            level = int(cutoff[4:])
+                        else:
+                            level = int(cutoff[10:])
+                        if level not in posterior_levels:
+                            posterior_levels.append(level)
+                
+                # If no GMM cutoffs specified, skip GMM calculation
+                if not posterior_levels:
+                    posterior_levels = [50]  # Default fallback
+                
+                min_umi_threshold = config.get('guide_mixture_model', {}).get('min_umi_threshold', 2)
+                
+                # Calculate GMM thresholds for each method at this depth
+                # Store plot data for default method to create combined plot later
+                default_method = config['cell_calling']['default_method']
+                
+                for method_name, method_cells in cell_barcodes_dict.items():
+                    cell_mask = adata.obs.index.isin(method_cells)
+                    adata_method = adata[cell_mask]
+                    
+                    if len(adata_method) == 0:
+                        continue
+                    
+                    # Calculate GMM thresholds for this method at this depth
+                    with Timer(f"  GMM analysis for {method_name}"):
+                        mixture_result = perform_guide_mixture_analysis(
+                    guide_counts_data=adata_method.obsm['guide_counts'],
+                    min_umi_threshold=min_umi_threshold,
+                    subsample_size=5000,
+                    n_threads=n_threads,
+                    posterior_levels=posterior_levels
+                        )
+                    
+                    # Extract and store thresholds
+                    if mixture_result is not None:
+                        method_thresholds = mixture_result['posterior_thresholds']
+                        
+                        # Store in depth-specific structure
+                        if fraction not in gmm_thresholds_by_depth:
+                            gmm_thresholds_by_depth[fraction] = {}
+                        gmm_thresholds_by_depth[fraction][method_name] = method_thresholds
+                        
+                        # Only store plot data for default method (will plot all depths together later)
+                        if method_name == default_method and gmm_plot_dir is not None:
+                            if 'gmm_plot_data' not in locals():
+                                gmm_plot_data = {}
+                            gmm_plot_data[fraction] = {
+                                'data': mixture_result['pooled_data'],
+                                'params': mixture_result['mixture_params']
+                            }
+                        
+                        # Add method-specific threshold columns to adata.obs
+                        for level in posterior_levels:
+                            if level in method_thresholds:
+                                col_name = f'gmm_{level}_sample_{method_name}'
+                                threshold_value = method_thresholds[level]
+                                
+                                # Initialize column if it doesn't exist
+                                if col_name not in adata.obs.columns:
+                                    adata.obs[col_name] = np.nan
+                                
+                                # Set threshold for this method's cells
+                                adata.obs.loc[cell_mask, col_name] = threshold_value
         
         # Calculate statistics including cell-specific metrics
-        stats = calculate_umi_stats(adata, cell_barcodes_dict, is_guide, guide_cutoffs)
+        with Timer("Calculating UMI statistics"):
+            stats = calculate_umi_stats(adata, cell_barcodes_dict, is_guide, guide_cutoffs)
+        
+        # Add GMM thresholds to stats if they were calculated
+        if calculate_gmm and is_guide and guide_cutoffs:
+            for method_name in cell_barcodes_dict.keys():
+                if fraction in gmm_thresholds_by_depth and method_name in gmm_thresholds_by_depth[fraction]:
+                    method_thresholds = gmm_thresholds_by_depth[fraction][method_name]
+                    for level in method_thresholds:
+                        if method_name == config['cell_calling']['default_method']:
+                            stats[f'gmm_{level}_threshold'] = method_thresholds[level]
         
         # Add fraction info
         stats['sample_id'] = sample_id
@@ -259,10 +376,77 @@ def run_saturation_analysis(config, sample_id, saturation_points, cell_barcodes_
         # Clean up memory after processing each fraction
         del adata
         gc.collect()
+        
+        fraction_elapsed = time.time() - fraction_start
+        print(f"  ✅ Fraction {fraction} completed in {fraction_elapsed:.2f}s")
     
+    # Create combined GMM plot for default method if we have the data
+    if calculate_gmm and gmm_plot_dir is not None and 'gmm_plot_data' in locals() and gmm_plot_data:
+        print(f"Generating combined GMM plot for {default_method}...")
+        
+        # Create figure with subplots for each depth
+        n_depths = len(gmm_plot_data)
+        fig, axes = plt.subplots(n_depths, 2, figsize=(14, 6 * n_depths))
+        
+        # Handle single depth case
+        if n_depths == 1:
+            axes = axes.reshape(1, -1)
+        
+        # Sort by depth for consistent ordering
+        sorted_depths = sorted(gmm_plot_data.keys())
+        
+        for idx, fraction in enumerate(sorted_depths):
+            plot_data = gmm_plot_data[fraction]
+            ax_pair = (axes[idx, 0], axes[idx, 1])
+            
+            # Use plot_mixture_analysis with provided axes
+            plot_mixture_analysis(
+                data=plot_data['data'],
+                params=plot_data['params'],
+                output_path=None,  # Not saving individual plots
+                title_prefix=f"{sample_id} - {default_method} - {int(fraction*100)}% depth",
+                min_umi_threshold=min_umi_threshold,
+                posterior_levels=posterior_levels,
+                axes=ax_pair
+            )
+            
+            # Add a clear fraction label on the left side of each row
+            axes[idx, 0].text(-0.18, 0.5, f'{int(fraction*100)}%\nDepth', 
+                            transform=axes[idx, 0].transAxes,
+                            fontsize=12, fontweight='bold', 
+                            verticalalignment='center',
+                            horizontalalignment='right',
+                            color='darkblue')
+        
+        # Overall title with more descriptive text
+        fig.suptitle(f'GMM Mixture Model Fits at Different Sequencing Depths - {default_method}', 
+                    fontsize=16, y=1.01)
+        
+        # Save combined plot
+        plot_subdir = gmm_plot_dir / f"gmm_{default_method}_combined" / "linear"
+        plot_subdir.mkdir(parents=True, exist_ok=True)
+        plot_path = plot_subdir / "plot.png"
+        
+        plt.tight_layout()
+        plt.savefig(plot_path, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  Saved combined GMM plot: {plot_path}")
+    
+    # Print timing summary
+    total_elapsed = time.time() - analysis_start
+    print(f"\n{'='*60}")
+    print(f"✅ Saturation analysis completed for {sample_id}")
+    print(f"   Total time: {total_elapsed:.2f}s ({total_elapsed/60:.1f} minutes)")
+    print(f"   Fractions processed: {len(saturation_points)}")
+    print(f"   Average time per fraction: {total_elapsed/len(saturation_points):.2f}s")
+    print(f"{'='*60}\n")
+    
+    if calculate_gmm:
+        return saturation_data, gmm_thresholds_by_depth
     return saturation_data
 
-def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config, cell_methods=None, is_guide=False, guide_cutoffs=None, pool=None, total_reads=None):
+def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config, cell_methods=None, is_guide=False, pool=None, total_reads=None, gmm_thresholds_by_depth=None, guide_cutoffs=None):
     """Generate UMI saturation plots.
     
     Returns:
@@ -281,9 +465,8 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config,
     # Create plots with cell-specific metrics if available
     if cell_methods:
         if is_guide:
-            # For guide samples, add extra row for guide-per-cell metrics
-            # Now we need 5 rows: 2 basic, 1 for UMI/genes, 2 for cutoff 1&2
-            fig, axes = plt.subplots(5, 2, figsize=(15, 30))
+            # For guide samples: 2 basic + 1 UMI + 3 cutoff-dependent × 2 + 1 GMM threshold = 8 rows
+            fig, axes = plt.subplots(8, 2, figsize=(15, 48))
         else:
             fig, axes = plt.subplots(3, 2, figsize=(15, 18))
     else:
@@ -356,78 +539,220 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config,
             axes[2, 1].grid(True, alpha=0.3)
             axes[2, 1].legend()
         else:
-            # For guide samples, we'll use this space for cutoff 1
+            # For guide samples, plot cutoff-independent metric by method (50% GMM)
+            default_cutoff = "gmm50"  # Use 50% GMM as default
             for i, method in enumerate(cell_methods):
-                mean_guides_col = f'{method}_mean_guides_per_cell_cutoff1'
+                mean_guides_col = f'{method}_mean_guides_per_cell_{default_cutoff}'
+                if mean_guides_col not in df.columns:
+                    # Fallback to first available cutoff
+                    for col in df.columns:
+                        if col.startswith(f'{method}_mean_guides_per_cell_'):
+                            mean_guides_col = col
+                            break
+                
                 if mean_guides_col in df.columns:
                     axes[2, 1].plot(x_data, df[mean_guides_col], 
                                    'o-', color=colors[i], label=method)
             
             axes[2, 1].set_xlabel(x_label)
             axes[2, 1].set_ylabel('Mean Guides per Cell')
-            axes[2, 1].set_title('Mean Guides per Cell by Method (Cutoff = 1 UMI)')
+            axes[2, 1].set_title('Mean Guides per Cell by Method (50% GMM)')
             axes[2, 1].grid(True, alpha=0.3)
             axes[2, 1].legend()
         
         # Add guide-specific plots if this is a guide sample
         if is_guide and cell_methods:
-            # Add Mean Guides per Cell for cutoff 2
+            # Row 3: Cutoff-independent metric (Mean UMIs per cell by method)
             for i, method in enumerate(cell_methods):
-                mean_guides_col = f'{method}_mean_guides_per_cell_cutoff2'
-                if mean_guides_col in df.columns:
-                    axes[3, 0].plot(x_data, df[mean_guides_col], 
+                umis_col = f'{method}_mean_umis_per_cell'
+                if umis_col in df.columns:
+                    axes[2, 0].plot(x_data, df[umis_col], 
                                    'o-', color=colors[i], label=method)
+            
+            axes[2, 0].set_xlabel(x_label)
+            axes[2, 0].set_ylabel('Mean Guide UMIs per Cell')
+            axes[2, 0].set_title('Guide UMIs per Cell by Method')
+            axes[2, 0].grid(True, alpha=0.3)
+            axes[2, 0].legend()
+            
+            # Row 4: Mean guides per cell - Method comparison (50% GMM)
+            default_cutoff = "gmm50"
+            for i, method in enumerate(cell_methods):
+                col = f'{method}_mean_guides_per_cell_{default_cutoff}'
+                if col not in df.columns:
+                    for c in df.columns:
+                        if c.startswith(f'{method}_mean_guides_per_cell_'):
+                            col = c
+                            break
+                if col in df.columns:
+                    axes[3, 0].plot(x_data, df[col], 'o-', color=colors[i], label=method)
             
             axes[3, 0].set_xlabel(x_label)
             axes[3, 0].set_ylabel('Mean Guides per Cell')
-            axes[3, 0].set_title('Mean Guides per Cell by Method (Cutoff = 2 UMIs)')
+            axes[3, 0].set_title('Mean Guides per Cell - Method Comparison (50% GMM)')
             axes[3, 0].grid(True, alpha=0.3)
             axes[3, 0].legend()
             
-            # Plot guides per cell for different cutoffs
-            cutoff_colors = ['purple', 'orange', 'brown', 'pink', 'gray']
+            # Row 4: Mean guides per cell - Cutoff comparison (default method)
+            default_method = config['cell_calling']['default_method']
+            cutoff_colors = ['purple', 'orange', 'brown', 'pink', 'red']
+            plot_idx = 0
+            for cutoff_spec in guide_cutoffs if guide_cutoffs else []:
+                if isinstance(cutoff_spec, int):
+                    suffix = f"cutoff{cutoff_spec}"
+                    label = f"≥{cutoff_spec} UMIs"
+                elif isinstance(cutoff_spec, str) and (cutoff_spec.startswith('gmm_') or cutoff_spec.startswith('posterior_')):
+                    level = cutoff_spec[4:] if cutoff_spec.startswith('gmm_') else cutoff_spec[10:]
+                    suffix = f"gmm{level}"
+                    label = f"{level}% GMM"
+                else:
+                    continue
+                
+                col = f'{default_method}_mean_guides_per_cell_{suffix}'
+                if col in df.columns and plot_idx < len(cutoff_colors):
+                    axes[3, 1].plot(x_data, df[col], 'o-', 
+                                   color=cutoff_colors[plot_idx], label=label)
+                    plot_idx += 1
             
-            # Mean guides per cell at different cutoffs
-            if guide_cutoffs is None:
-                raise ValueError("Guide cutoffs must be provided for guide plots")
+            axes[3, 1].set_xlabel(x_label)
+            axes[3, 1].set_ylabel('Mean Guides per Cell')
+            axes[3, 1].set_title(f'Mean Guides per Cell - Cutoff Comparison ({default_method})')
+            axes[3, 1].grid(True, alpha=0.3)
+            axes[3, 1].legend()
             
-            # Use default method from config for single-method plots
-            single_method = config['cell_calling']['default_method']
-            if single_method not in cell_methods:
-                raise ValueError(f"Required method {single_method} not found in cell calling results. Available methods: {cell_methods}")
-            
-            for j, cutoff in enumerate(guide_cutoffs):
-                col_name = f'{single_method}_mean_guides_per_cell_cutoff{cutoff}'
-                if col_name in df.columns:
-                    axes[4, 0].plot(x_data, df[col_name], 
-                                   'o-', color=cutoff_colors[j % len(cutoff_colors)], label=f'Cutoff {cutoff}')
+            # Row 5: % Cells with guides - Method comparison (50% GMM)
+            for i, method in enumerate(cell_methods):
+                col = f'{method}_fraction_cells_with_guides_{default_cutoff}'
+                if col not in df.columns:
+                    for c in df.columns:
+                        if c.startswith(f'{method}_fraction_cells_with_guides_'):
+                            col = c
+                            break
+                if col in df.columns:
+                    axes[4, 0].plot(x_data, df[col] * 100, 'o-', color=colors[i], label=method)
             
             axes[4, 0].set_xlabel(x_label)
-            axes[4, 0].set_ylabel('Mean Guides per Cell')
-            axes[4, 0].set_title(f'Guide Detection Saturation by Cutoff ({single_method})')
+            axes[4, 0].set_ylabel('% Cells with Guides')
+            axes[4, 0].set_title('% Cells with Guides - Method Comparison (50% GMM)')
             axes[4, 0].grid(True, alpha=0.3)
             axes[4, 0].legend()
             
-            # Fraction of cells with guides at different cutoffs
-            method = config['cell_calling']['default_method']
-            if method not in cell_methods:
-                raise ValueError(f"Required method {method} not found in cell calling results. Available methods: {cell_methods}")
-            
-            for j, cutoff in enumerate(guide_cutoffs):
-                col_name = f'{method}_fraction_cells_with_guides_cutoff{cutoff}'
-                if col_name in df.columns:
-                    axes[4, 1].plot(x_data, df[col_name], 
-                                   'o-', color=cutoff_colors[j % len(cutoff_colors)], label=f'Cutoff {cutoff}')
+            # Row 5: % Cells with guides - Cutoff comparison (default method)
+            plot_idx = 0
+            for cutoff_spec in guide_cutoffs if guide_cutoffs else []:
+                if isinstance(cutoff_spec, int):
+                    suffix = f"cutoff{cutoff_spec}"
+                    label = f"≥{cutoff_spec} UMIs"
+                elif isinstance(cutoff_spec, str) and (cutoff_spec.startswith('gmm_') or cutoff_spec.startswith('posterior_')):
+                    level = cutoff_spec[4:] if cutoff_spec.startswith('gmm_') else cutoff_spec[10:]
+                    suffix = f"gmm{level}"
+                    label = f"{level}% GMM"
+                else:
+                    continue
+                
+                col = f'{default_method}_fraction_cells_with_guides_{suffix}'
+                if col in df.columns and plot_idx < len(cutoff_colors):
+                    axes[4, 1].plot(x_data, df[col] * 100, 'o-', 
+                                   color=cutoff_colors[plot_idx], label=label)
+                    plot_idx += 1
             
             axes[4, 1].set_xlabel(x_label)
-            axes[4, 1].set_ylabel('Fraction of Cells with Guides')
-            axes[4, 1].set_title(f'Cell Coverage Saturation by Cutoff ({method})')
+            axes[4, 1].set_ylabel('% Cells with Guides')
+            axes[4, 1].set_title(f'% Cells with Guides - Cutoff Comparison ({default_method})')
             axes[4, 1].grid(True, alpha=0.3)
             axes[4, 1].legend()
             
-            # Hide the unused subplot for guide samples
-            axes[3, 1].set_visible(False)
+            # Row 6: UMIs per guide - Method comparison (50% GMM)
+            for i, method in enumerate(cell_methods):
+                col = f'{method}_umis_per_guide_per_cell_{default_cutoff}'
+                if col not in df.columns:
+                    for c in df.columns:
+                        if c.startswith(f'{method}_umis_per_guide_per_cell_'):
+                            col = c
+                            break
+                if col in df.columns:
+                    axes[5, 0].plot(x_data, df[col], 'o-', color=colors[i], label=method)
+            
+            axes[5, 0].set_xlabel(x_label)
+            axes[5, 0].set_ylabel('Mean UMIs per Guide')
+            axes[5, 0].set_title('UMIs per Guide - Method Comparison (50% GMM)')
+            axes[5, 0].grid(True, alpha=0.3)
+            axes[5, 0].legend()
+            
+            # Row 6: UMIs per guide - Cutoff comparison (default method)
+            plot_idx = 0
+            for cutoff_spec in guide_cutoffs if guide_cutoffs else []:
+                if isinstance(cutoff_spec, int):
+                    suffix = f"cutoff{cutoff_spec}"
+                    label = f"≥{cutoff_spec} UMIs"
+                elif isinstance(cutoff_spec, str) and (cutoff_spec.startswith('gmm_') or cutoff_spec.startswith('posterior_')):
+                    level = cutoff_spec[4:] if cutoff_spec.startswith('gmm_') else cutoff_spec[10:]
+                    suffix = f"gmm{level}"
+                    label = f"{level}% GMM"
+                else:
+                    continue
+                
+                col = f'{default_method}_umis_per_guide_per_cell_{suffix}'
+                if col in df.columns and plot_idx < len(cutoff_colors):
+                    axes[5, 1].plot(x_data, df[col], 'o-', 
+                                   color=cutoff_colors[plot_idx], label=label)
+                    plot_idx += 1
+            
+            axes[5, 1].set_xlabel(x_label)
+            axes[5, 1].set_ylabel('Mean UMIs per Guide')
+            axes[5, 1].set_title(f'UMIs per Guide - Cutoff Comparison ({default_method})')
+            axes[5, 1].grid(True, alpha=0.3)
+            axes[5, 1].legend()
+            
     
+    # Add GMM threshold plot in the main figure if available
+    if gmm_thresholds_by_depth and is_guide and cell_methods:
+        # Row 7: GMM Thresholds vs Reads (single panel)
+        fractions = sorted(gmm_thresholds_by_depth.keys())
+        reads_per_fraction = [f * total_reads / 1e6 for f in fractions]
+        
+        # Get default method for threshold plotting
+        default_method = config['cell_calling']['default_method']
+        
+        # Plot thresholds for each posterior level
+        threshold_colors = ['blue', 'green', 'red', 'orange', 'purple']
+        plot_idx = 0
+        
+        for level in sorted(set().union(*[list(thresholds.get(default_method, {}).keys()) 
+                                        for thresholds in gmm_thresholds_by_depth.values()])):
+            thresholds_at_level = []
+            for fraction in fractions:
+                if (fraction in gmm_thresholds_by_depth and 
+                    default_method in gmm_thresholds_by_depth[fraction] and
+                    level in gmm_thresholds_by_depth[fraction][default_method]):
+                    thresholds_at_level.append(gmm_thresholds_by_depth[fraction][default_method][level])
+                else:
+                    thresholds_at_level.append(None)
+            
+            # Filter out None values
+            valid_reads = [r for r, t in zip(reads_per_fraction, thresholds_at_level) if t is not None]
+            valid_thresholds = [t for t in thresholds_at_level if t is not None]
+            
+            if valid_thresholds and plot_idx < len(threshold_colors):
+                axes[6, 0].plot(valid_reads, valid_thresholds, 
+                               marker='o', color=threshold_colors[plot_idx], 
+                               label=f'{level}% posterior', linewidth=2)
+                plot_idx += 1
+        
+        axes[6, 0].set_xlabel(x_label)
+        axes[6, 0].set_ylabel('GMM Threshold (UMIs)')
+        axes[6, 0].set_title(f'GMM Thresholds vs Sequencing Depth ({default_method})')
+        axes[6, 0].grid(True, alpha=0.3)
+        axes[6, 0].legend()
+        
+        # Hide the second panel in row 7
+        axes[6, 1].set_visible(False)
+        
+        # Hide row 8 panels
+        axes[7, 0].set_visible(False)
+        axes[7, 1].set_visible(False)
+    
+    plt.figure(fig.number)  # Switch back to main figure
     plt.tight_layout()
     
     # Create clean directory structure from the output path
@@ -444,7 +769,7 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config,
     clean_dir.mkdir(parents=True, exist_ok=True)
     clean_path = clean_dir / 'plot.png'
     
-    plt.savefig(clean_path, dpi=300, bbox_inches='tight')
+    plt.savefig(clean_path, bbox_inches='tight')
     plt.close()
     
     # Update output_plot_path for metadata
@@ -669,7 +994,7 @@ def plot_saturation_curves(saturation_data, output_plot_path, sample_id, config,
 #     plt.tight_layout()
 #     output_suffix = '_guide' if is_guide else ''
 #     plt.savefig(Path(output_dir) / f'{sample_id}{output_suffix}_umi_diversity_analysis.png', 
-#                 dpi=300, bbox_inches='tight')
+#                 dpi=100, bbox_inches='tight')
 #     plt.close()
 #     
 #     return diversity_stats
@@ -726,6 +1051,7 @@ def main():
     parser.add_argument("--processing", required=True, choices=["raw", "trimmed", "recovered", "merged"],
                         help="Processing state (raw, trimmed, recovered, or merged)")
     parser.add_argument("--scratch-dir", required=True, help="Scratch directory base path")
+    parser.add_argument("--threads", type=int, default=4, help="Number of threads for parallel processing")
     
     args = parser.parse_args()
     
@@ -773,7 +1099,7 @@ def main():
         cell_calling_results, cell_barcodes_dict = load_cell_calling_results(args.cell_calling_dir, args.sample_id)
     
     # Get saturation points from config
-    saturation_points = config['cell_calling']['defaults']['saturation_points']
+    saturation_points = config['cell_calling']['saturation_points']
     print(f"Saturation points: {saturation_points}")
     
     print(f"Found cell calling methods: {list(cell_barcodes_dict.keys())}")
@@ -787,10 +1113,28 @@ def main():
         print(f"Using guide cutoffs: {guide_cutoffs}")
     
     # Run saturation analysis with cell-specific metrics
-    saturation_data = run_saturation_analysis(
+    # Always calculate GMM for guide samples
+    calculate_gmm = is_guide
+    
+    # Set up GMM plot directory if calculating GMM
+    gmm_plot_dir = None
+    if calculate_gmm:
+        # Place GMM plots in the same parent directory as saturation plots
+        # They'll be at the same level as guide_umi_saturation
+        gmm_plot_dir = output_plot_path.parent
+        # No need to create directory here - will be created per plot
+    
+    result = run_saturation_analysis(
         config, args.sample_id, saturation_points, cell_barcodes_dict, args.source, args.processing, 
-        args.scratch_dir, is_guide, guide_cutoffs
+        args.scratch_dir, is_guide, calculate_gmm, guide_cutoffs, gmm_plot_dir, args.threads
     )
+    
+    # Handle return value based on whether GMM was calculated
+    if calculate_gmm:
+        saturation_data, gmm_thresholds_by_depth = result
+    else:
+        saturation_data = result
+        gmm_thresholds_by_depth = None
     
     if saturation_data:
         # Save saturation data
@@ -801,7 +1145,8 @@ def main():
         print("Generating saturation plots...")
         pool = get_sample_pool_from_id(config, args.sample_id)
         plot_metadata = plot_saturation_curves(saturation_data, output_plot_path, args.sample_id, config,
-                                               list(cell_barcodes_dict.keys()), is_guide, guide_cutoffs, pool=pool, total_reads=total_reads)
+                                               list(cell_barcodes_dict.keys()), is_guide, pool=pool, total_reads=total_reads,
+                                               gmm_thresholds_by_depth=gmm_thresholds_by_depth, guide_cutoffs=guide_cutoffs)
         
         # Save plot metadata
         if plot_metadata:
@@ -814,7 +1159,18 @@ def main():
     feature_type = 'guide' if is_guide else 'gene expression'
     print(f"{feature_type.capitalize()} UMI saturation analysis completed.")
     print(f"Results saved to: {output_tsv_path}")
-    print(f"Plot saved to: {output_plot_path}")
+    
+    # Construct the actual plot path based on the logic in plot_saturation_curves
+    actual_plot_dir = output_plot_path.parent
+    if is_guide:
+        actual_plot_path = actual_plot_dir / 'guide_umi_saturation' / 'linear' / 'plot.png'
+    else:
+        actual_plot_path = actual_plot_dir / 'umi_saturation' / 'linear' / 'plot.png'
+    print(f"Plot saved to: {actual_plot_path}")
+    
+    # Mention GMM plots if they were generated
+    if gmm_plot_dir and calculate_gmm:
+        print(f"GMM mixture model plots saved to: {gmm_plot_dir}/gmm_*/")
 
 if __name__ == "__main__":
     main()

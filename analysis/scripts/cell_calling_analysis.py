@@ -94,9 +94,6 @@ def load_dropletutils_results(output_dir, sample_id, adata):
     results_file = Path(output_dir) / f"{sample_id}_barcoderanks.tsv"
     df = pd.read_csv(results_file, sep='\t')
     
-    # Map back to adata
-    barcode_to_idx = {bc: i for i, bc in enumerate(adata.obs_names)}
-    
     results = {}
     
     # Get knee and inflection thresholds from the results file
@@ -107,13 +104,17 @@ def load_dropletutils_results(output_dir, sample_id, adata):
     is_cell_knee = np.zeros(adata.n_obs, dtype=bool)
     is_cell_inflection = np.zeros(adata.n_obs, dtype=bool)
     
-    # Map barcode results back to adata indices
-    for _, row in df.iterrows():
-        barcode = row['barcode']
-        if barcode in barcode_to_idx:
-            idx = barcode_to_idx[barcode]
-            is_cell_knee[idx] = row['is_cell_knee']
-            is_cell_inflection[idx] = row['is_cell_inflection']
+    # Vectorized mapping of barcode results back to adata indices
+    # Create a mapping from barcodes to their positions in adata
+    adata_barcode_series = pd.Series(range(adata.n_obs), index=adata.obs_names)
+    
+    # Get indices for barcodes that exist in both df and adata
+    common_barcodes = df['barcode'][df['barcode'].isin(adata.obs_names)]
+    indices = adata_barcode_series[common_barcodes].values
+    
+    # Vectorized assignment using the indices
+    is_cell_knee[indices] = df.loc[df['barcode'].isin(adata.obs_names), 'is_cell_knee'].values
+    is_cell_inflection[indices] = df.loc[df['barcode'].isin(adata.obs_names), 'is_cell_inflection'].values
     
     results['BarcodeRanks_Knee'] = (is_cell_knee, knee_threshold)
     results['BarcodeRanks_Inflection'] = (is_cell_inflection, inflection_threshold)
@@ -158,12 +159,9 @@ def get_cell_calling_params(config, sample_id):
     
     params = {'expected_cells': int(row['expected_cells'])}
     
-    # Optional parameters with config defaults
-    defaults = config['cell_calling']['defaults']
+    # Get min_umi_threshold from sample_info if provided
     if pd.notna(row.get('min_umi_threshold')):
         params['min_umi_threshold'] = int(row['min_umi_threshold'])
-    else:
-        params['min_umi_threshold'] = defaults.get('min_umi_threshold', 100)
     
     
     return params
@@ -205,11 +203,17 @@ def main():
     
     # Method 1: Expected cell count
     if 'Expected_Cells' in methods_to_run:
+        # Require expected_cells in params
+        if 'expected_cells' not in params:
+            raise ValueError("Expected_Cells method requires 'expected_cells' in sample_info.tsv")
         print(f"Running expected cell method (n={params['expected_cells']})...")
         methods_results['Expected_Cells'] = expected_cell_method(adata, params['expected_cells'])
     
     # Method 2: Threshold method
     if 'UMI_Threshold' in methods_to_run:
+        # Require min_umi_threshold in params
+        if 'min_umi_threshold' not in params:
+            raise ValueError("UMI_Threshold method requires 'min_umi_threshold' in sample_info.tsv")
         print(f"Running threshold method (min_umi={params['min_umi_threshold']})...")
         methods_results['UMI_Threshold'] = threshold_method(adata, params['min_umi_threshold'])
     

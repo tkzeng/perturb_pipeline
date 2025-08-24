@@ -17,6 +17,9 @@ import sys
 from multiprocessing import Pool, cpu_count
 from functools import partial
 
+# Set global matplotlib parameters
+plt.rcParams['savefig.dpi'] = 100
+
 # No longer need plot_config since categories come from the input file structure
 
 
@@ -241,7 +244,7 @@ def save_plot_with_structure(fig, metric_col, stratify_by, source, processing,
     filepath = plot_dir / filename
     
     # Save plot
-    fig.savefig(filepath, dpi=150, bbox_inches='tight')
+    fig.savefig(filepath, bbox_inches='tight')
     plt.close(fig)
     
     return filepath
@@ -274,6 +277,9 @@ def process_metric(args_tuple):
         'total_guides_detected_cutoff',
         'total_guide_detections_cutoff',
         'total_targeted_genes_cutoff',
+        # GMM threshold values (50% posterior only)
+        'gmm_50_sample_threshold',
+        'gmm_50_biosample_threshold',
     ]
     
     # Define metrics that should be plotted as scatter plots vs total reads (group-level)
@@ -300,7 +306,7 @@ def process_metric(args_tuple):
     ]
     
     # Check if this metric should be skipped
-    if metric_col in skip_metrics:
+    if any(skip_pattern in metric_col for skip_pattern in skip_metrics):
         return results
     
     # Check if this metric should be a scatter plot
@@ -337,12 +343,31 @@ def process_metric(args_tuple):
         if n_cells_col and n_cells_col in df.columns:
             # Create a copy of df to add the calculated column
             plot_df = df.copy()
-            plot_df['mean_reads_per_cell'] = plot_df['total_reads'] / plot_df[n_cells_col]
-            plot_df['mean_reads_per_cell'] = plot_df['mean_reads_per_cell'].replace([np.inf, -np.inf], np.nan)
+            
+            # For guide metrics, use guide reads; for others use total (GEX) reads
+            if metric_col.startswith('guide_') or 'per_guide' in metric_col:
+                # Use guide reads per cell - must exist for guide metrics
+                guide_reads_col = f'guide_reads_per_cell_{method_match}' if method_match else None
+                if guide_reads_col and guide_reads_col in df.columns:
+                    # Use pre-calculated guide_reads_per_cell
+                    plot_df['mean_guide_reads_per_cell'] = plot_df[guide_reads_col]
+                    x_column = 'mean_guide_reads_per_cell'
+                elif 'guide_total_reads' in df.columns:
+                    # Calculate from guide_total_reads
+                    plot_df['mean_guide_reads_per_cell'] = plot_df['guide_total_reads'] / plot_df[n_cells_col]
+                    x_column = 'mean_guide_reads_per_cell'
+                else:
+                    raise ValueError(f"Guide reads data not found for guide metric {metric_col}")
+            else:
+                # For non-guide metrics, use GEX reads
+                plot_df['mean_gex_reads_per_cell'] = plot_df['total_reads'] / plot_df[n_cells_col]
+                x_column = 'mean_gex_reads_per_cell'
+            
+            plot_df[x_column] = plot_df[x_column].replace([np.inf, -np.inf], np.nan)
             
             # Create scatter plots (both linear and log scale)
             for scale, log_scale in [('linear', False), ('log', True)]:
-                fig = create_scatter_plot(plot_df, 'mean_reads_per_cell', metric_col, stratify_by, log_scale)
+                fig = create_scatter_plot(plot_df, x_column, metric_col, stratify_by, log_scale)
                 filepath = save_plot_with_structure(fig, metric_col, stratify_by,
                                                   source, processing, output_base_dir, scale, category)
                 results.append((metric_col, scale, filepath))

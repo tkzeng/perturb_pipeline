@@ -324,7 +324,10 @@ def add_guide_data(adata_gex, adata_guide):
     log_print("🔄 Creating guide matrix for ALL GEX cells (GEX is authoritative)...")
     cells_gex_list = list(adata_gex_all.obs.index)
     cells_guide_set = set(adata_guide_common.obs.index)
-    common_cells_ordered = [cell for cell in cells_gex_list if cell in cells_guide_set]
+    # Vectorized intersection preserving GEX order
+    gex_index = pd.Index(cells_gex_list)
+    common_mask = gex_index.isin(cells_guide_set)
+    common_cells_ordered = gex_index[common_mask].tolist()
 
     log_print(f"📊 GEX cells (authoritative): {len(cells_gex_list):,}")
     log_print(f"📊 Guide cells available: {adata_guide_common.shape[0]:,}")
@@ -337,9 +340,17 @@ def add_guide_data(adata_gex, adata_guide):
     n_gex_cells = adata_gex_all.shape[0]
     n_guides = adata_guide_common.shape[1]
 
-    # Get indices of cells that have guide data
-    cell_to_idx = {cell: i for i, cell in enumerate(adata_gex_all.obs.index)}
-    guide_indices = [cell_to_idx[cell] for cell in adata_guide_common.obs.index]
+    # Get indices of cells that have guide data using vectorized operations
+    gex_index = pd.Index(adata_gex_all.obs.index)
+    guide_index = pd.Index(adata_guide_common.obs.index)
+    # Use get_indexer to vectorize the index lookup
+    guide_indices = gex_index.get_indexer(guide_index)
+    # Filter out any -1 values (cells not found)
+    valid_mask = guide_indices != -1
+    if not valid_mask.all():
+        missing_count = (~valid_mask).sum()
+        raise ValueError(f"Found {missing_count} guide cells not in GEX dataset")
+    guide_indices = guide_indices[valid_mask].tolist()
 
     log_print(f"📊 Creating guide matrix for {n_gex_cells} GEX cells ({len(guide_indices)} with data)")
 
@@ -394,15 +405,20 @@ def extract_and_validate_barcodes(adata, parsebio_barcodes):
     """
     log_print("🔍 Extracting Round1 barcodes from cell names...")
 
-    # Extract round1 barcodes (last 8 characters)
-    round1_barcodes = [x[-8:] for x in adata.obs_names]
-
-    # Validate barcode extraction
-    invalid_barcodes = [bc for bc in round1_barcodes if len(bc) != 8]
-    if invalid_barcodes:
-        raise RuntimeError(f"Found {len(invalid_barcodes)} invalid barcodes (not 8 chars): {invalid_barcodes[:5]}")
-
-    adata.obs["round1"] = round1_barcodes
+    # Extract round1 barcodes (last 8 characters) using vectorized string operations
+    # CRITICAL: Use the obs_names directly as a pandas Index to preserve barcode names
+    obs_index_series = pd.Series(adata.obs_names.values, index=adata.obs_names)
+    round1_barcodes = obs_index_series.str[-8:]
+    
+    # Validate barcode extraction using vectorized length check
+    barcode_lengths = round1_barcodes.str.len()
+    invalid_mask = barcode_lengths != 8
+    if invalid_mask.any():
+        invalid_count = invalid_mask.sum()
+        invalid_examples = round1_barcodes[invalid_mask].head(5).tolist()
+        raise RuntimeError(f"Found {invalid_count} invalid barcodes (not 8 chars): {invalid_examples}")
+    
+    adata.obs["round1"] = round1_barcodes.values
 
     log_print(f"📊 Extracted barcodes for {len(adata.obs_names)} cells")
 
@@ -457,15 +473,31 @@ def map_cells_to_samples_with_plate(adata, plate_name, plate_maps_file, parsebio
     # Map wells to biological samples
     adata.obs["biological_sample"] = adata.obs["well"].map(well_to_sample)
 
-    # Add all metadata columns from plate maps
-    for _, row_idx in adata.obs.iterrows():
-        well = row_idx.get("well")
-        if well and well in well_to_metadata:
-            metadata = well_to_metadata[well]
-            for col_name, value in metadata.items():
-                # Skip 'Sample' as it's already stored as 'biological_sample'
-                if col_name != 'Sample':
-                    adata.obs.at[row_idx.name, col_name] = value
+    # Add all metadata columns from plate maps using vectorized operations
+    # Convert well_to_metadata dict to DataFrame for efficient merging
+    metadata_records = []
+    for well, metadata in well_to_metadata.items():
+        record = {'well': well}
+        record.update(metadata)
+        metadata_records.append(record)
+    
+    if metadata_records:
+        metadata_df = pd.DataFrame(metadata_records)
+        # Remove 'Sample' column as it's already stored as 'biological_sample'
+        if 'Sample' in metadata_df.columns:
+            metadata_df = metadata_df.drop(columns=['Sample'])
+        
+        # Merge metadata with adata.obs based on well column
+        # This is a vectorized left join operation
+        # CRITICAL: Preserve the original index (cell barcodes) after merge
+        original_index = adata.obs.index
+        adata.obs = adata.obs.merge(metadata_df, on='well', how='left', suffixes=('', '_meta'))
+        adata.obs.index = original_index  # Restore barcode names (left merge preserves order)
+        
+        # Handle any duplicate columns from merge (shouldn't happen but being safe)
+        duplicate_cols = [col for col in adata.obs.columns if col.endswith('_meta')]
+        if duplicate_cols:
+            adata.obs = adata.obs.drop(columns=duplicate_cols)
 
     # Validate mapping results
     unmapped_wells = adata.obs[adata.obs["well"].isna()]
@@ -577,6 +609,121 @@ def apply_cell_filters(adata, config=None):
 # =============================================================================
 # 5. GENE ANNOTATION & FILTERING
 # =============================================================================
+
+
+def add_comprehensive_gene_annotations_fast(adata, gene_annotation_table_path):
+    """Add comprehensive gene annotations using pre-computed table.
+    
+    This is a FAST replacement for add_comprehensive_gene_annotations that uses
+    a pre-computed TSV table instead of querying gffutils database.
+    
+    Parameters:
+    -----------
+    adata : AnnData
+        The annotated data object
+    gene_annotation_table_path : str
+        Path to the pre-computed gene annotation table (TSV format)
+    """
+    log_print("🧬 Adding comprehensive gene annotations (fast version)...")
+    
+    # Load pre-computed annotations from TSV
+    gene_annotations = pd.read_csv(gene_annotation_table_path, sep='\t', index_col='gene_id')
+    
+    log_print(f"  📋 Loaded annotations for {len(gene_annotations)} genes from table")
+    
+    # Initialize columns with defaults
+    adata.var['gene_type'] = ''
+    adata.var['hgnc_id'] = ''
+    adata.var['gene_name'] = ''  # Gene symbols
+    adata.var['chromosome'] = ''
+    adata.var['ribosomal'] = False
+    adata.var['cell_cycle'] = False
+    adata.var['cell_cycle_phase'] = ''
+    adata.var['pct_cells_expressed'] = 0.0
+    
+    # Calculate % cells expressed (using expression threshold > 0)
+    if scipy.sparse.issparse(adata.X):
+        cells_expressing = (adata.X > 0).sum(axis=0).A1
+    else:
+        cells_expressing = (adata.X > 0).sum(axis=0)
+    
+    adata.var['pct_cells_expressed'] = (cells_expressing / adata.n_obs) * 100
+    
+    # Perform vectorized merge to annotate all genes at once
+    log_print("  🔄 Performing vectorized gene annotation merge...")
+    
+    # Keep track of original var columns
+    original_cols = list(adata.var.columns)
+    
+    # Merge annotations - this is MUCH faster than iterating
+    adata.var = adata.var.merge(
+        gene_annotations[['gene_type', 'hgnc_id', 'gene_name', 'chromosome', 
+                          'ribosomal', 'cell_cycle', 'cell_cycle_phase']],
+        left_index=True, 
+        right_index=True, 
+        how='left',
+        suffixes=('_old', '')
+    )
+    
+    # Fill NaN values with defaults
+    adata.var['gene_type'] = adata.var['gene_type'].fillna('')
+    adata.var['hgnc_id'] = adata.var['hgnc_id'].fillna('')
+    adata.var['gene_name'] = adata.var['gene_name'].fillna('')
+    adata.var['chromosome'] = adata.var['chromosome'].fillna('')
+    adata.var['ribosomal'] = adata.var['ribosomal'].fillna(False)
+    adata.var['cell_cycle'] = adata.var['cell_cycle'].fillna(False)
+    adata.var['cell_cycle_phase'] = adata.var['cell_cycle_phase'].fillna('')
+    
+    # Add 'gene' column as alias for gene_name (for compatibility)
+    adata.var['gene'] = adata.var['gene_name']
+    
+    # Clean up any duplicate columns from merge
+    for col in adata.var.columns:
+        if col.endswith('_old'):
+            adata.var.drop(columns=[col], inplace=True)
+    
+    # Count successful annotations
+    annotated_count = (adata.var['gene_type'] != '').sum()
+    success_rate = annotated_count / adata.n_vars
+    
+    log_print(f"  📊 Annotation results: {annotated_count}/{adata.n_vars} genes annotated ({success_rate:.1%})")
+    
+    # Validate annotation success
+    if annotated_count == 0:
+        raise RuntimeError(f"CRITICAL: Gene annotation completely failed. 0/{adata.n_vars} genes annotated.")
+    
+    if success_rate < 0.5:
+        raise RuntimeError(f"CRITICAL: Gene annotation mostly failed. Only {success_rate:.1%} genes annotated.")
+    
+    # Calculate mitochondrial genes using annotated gene symbols
+    log_print("  🧬 Calculating mitochondrial gene scores...")
+    mt_genes = adata.var["gene"].str.startswith("MT-", na=False)
+    log_print(f"  📊 Found {mt_genes.sum()} mitochondrial genes")
+    
+    if mt_genes.sum() == 0:
+        raise RuntimeError("CRITICAL: No mitochondrial genes found. MT genes are required for quality control.")
+    
+    # Calculate ribosomal scores
+    log_print("  🧬 Calculating ribosomal gene scores...")
+    ribo_genes = adata.var['ribosomal'] == True
+    log_print(f"  📊 Found {ribo_genes.sum()} ribosomal genes")
+    
+    if ribo_genes.sum() > 0:
+        # Calculate ribosomal percentage
+        adata.obs['pct_counts_ribo'] = (adata[:, ribo_genes].X.sum(axis=1) / adata.X.sum(axis=1)) * 100
+        if hasattr(adata.obs['pct_counts_ribo'], 'A1'):
+            adata.obs['pct_counts_ribo'] = adata.obs['pct_counts_ribo'].A1
+        log_print(f"  ✅ Added ribosomal percentage using {ribo_genes.sum()} genes")
+    else:
+        raise RuntimeError("CRITICAL: No ribosomal genes found. Ribosomal gene metrics are required for quality control.")
+    
+    # Summary statistics
+    log_print(f"  ✅ Annotated {annotated_count}/{adata.n_vars} genes")
+    log_print(f"  📊 Gene types: {adata.var['gene_type'].value_counts().head().to_dict()}")
+    log_print(f"  📊 Ribosomal: {adata.var['ribosomal'].sum()}")
+    log_print(f"  📊 Cell cycle: {adata.var['cell_cycle'].sum()}")
+    log_print(f"  📊 Chromosomes: {adata.var['chromosome'].nunique()} unique")
+    log_print(f"  📊 Mean % cells expressed: {adata.var['pct_cells_expressed'].mean():.1f}%")
 
 
 def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path):
@@ -780,157 +927,7 @@ def filter_guides_by_reference(adata):
     raise NotImplementedError("Guide filtering functionality not yet implemented for main pipeline")
 
 
-def calculate_guides_per_cell(guide_counts, cutoff):
-    """Calculate guides per cell at a given cutoff.
-
-    Args:
-        guide_counts: Sparse matrix of guide counts (cells x guides)
-        cutoff: Minimum count threshold for guide detection
-
-    Returns:
-        numpy array of guides per cell
-    """
-    binary_guides = (guide_counts >= cutoff).astype(int)
-    return np.array(binary_guides.sum(axis=1)).flatten()
-
-
-def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs, guide_to_genes=None):
-    """Calculate guide metrics for a specific set of cells, including those with no guides.
-
-    CRITICAL: This function includes ALL provided cells in calculations, even if they
-    don't exist in the guide data. Missing cells contribute 0 UMIs to averages.
-
-    Args:
-        guide_adata: Guide count AnnData object (any subset)
-        cell_barcodes: List/array of cell barcodes to calculate metrics for
-        guide_cutoffs: List of UMI cutoffs for guide detection
-        guide_to_genes: Optional dict mapping guide IDs to gene lists
-
-    Returns:
-        dict: Metrics including:
-            - n_cells_total: Total cells provided
-            - n_cells_in_guide_data: Cells found in guide data
-            - guide_umis_per_cell: Mean guide UMIs (including 0s)
-            - For each cutoff:
-                - guides_per_cell_cutoff{N}: Mean guides per cell
-                - fraction_cells_with_guides_cutoff{N}: Fraction with ≥1 guide
-                - umis_per_guide_per_cell_cutoff{N}: Mean UMIs per guide (cells with guides only)
-                - total_guides_detected_cutoff{N}: Unique guides across all cells
-                - total_guide_detections_cutoff{N}: Total guide detections across all cells (sum)
-                - total_targeted_genes_cutoff{N}: Unique genes targeted (if guide_to_genes provided)
-    """
-    metrics = {}
-    n_cells_total = len(cell_barcodes)
-    metrics['n_cells_total'] = n_cells_total
-
-    if n_cells_total == 0:
-        raise ValueError("No cell barcodes provided")
-
-    # Find which cells exist in guide data using vectorized operations
-    barcode_series = pd.Series(range(guide_adata.n_obs), index=guide_adata.obs_names)
-    cell_indices_series = barcode_series.reindex(cell_barcodes)
-
-    # Separate found and missing cells
-    found_mask = ~cell_indices_series.isna()
-    n_cells_found = found_mask.sum()
-    metrics['n_cells_in_guide_data'] = int(n_cells_found)
-
-    log_print(f"Found {n_cells_found:,} of {n_cells_total:,} cells in guide data ({n_cells_found/n_cells_total*100:.1f}%)")
-
-    # Initialize arrays for ALL cells (including missing ones)
-    all_umis_per_cell = np.zeros(n_cells_total)
-
-    # If we have cells in guide data, get their counts
-    if n_cells_found > 0:
-        cell_indices = cell_indices_series.dropna().astype(int).values
-        guide_counts_found = guide_adata.X[cell_indices]
-
-        # Calculate UMIs for found cells
-        umis_per_found_cell = np.array(guide_counts_found.sum(axis=1)).flatten()
-
-        # Place these values in the correct positions in the full array
-        all_umis_per_cell[found_mask] = umis_per_found_cell
-
-        # Store guide counts for cutoff calculations
-        guide_counts_sparse = scipy.sparse.csr_matrix(guide_counts_found)
-    else:
-        guide_counts_sparse = None
-
-    # Calculate mean UMIs per cell (including cells with 0)
-    metrics['guide_umis_per_cell'] = float(np.mean(all_umis_per_cell))
-
-    # Calculate metrics for each cutoff
-    for cutoff in guide_cutoffs:
-        # Initialize arrays for ALL cells
-        all_guides_per_cell = np.zeros(n_cells_total)
-
-        if n_cells_found > 0 and guide_counts_sparse is not None:
-            # Calculate guides per cell for found cells
-            guides_per_found_cell = calculate_guides_per_cell(guide_counts_sparse, cutoff)
-            all_guides_per_cell[found_mask] = guides_per_found_cell
-
-            # Binary guide matrix for diversity calculations
-            binary_guides = (guide_counts_sparse >= cutoff).astype(int)
-            guides_detected = np.array(binary_guides.sum(axis=0)).flatten() > 0
-            n_guides_detected = int(np.sum(guides_detected))
-            
-            # Total guide detections across all cells (sum of binary matrix)
-            total_guide_detections = int(binary_guides.sum())
-        else:
-            n_guides_detected = 0
-            total_guide_detections = 0
-
-        # Mean guides per cell (including cells with 0)
-        metrics[f'guides_per_cell_cutoff{cutoff}'] = float(np.mean(all_guides_per_cell))
-
-        # Fraction of cells with guides (out of ALL cells)
-        cells_with_guides = all_guides_per_cell > 0
-        metrics[f'fraction_cells_with_guides_cutoff{cutoff}'] = float(np.sum(cells_with_guides) / n_cells_total)
-
-        # UMIs per guide per cell (only for cells with guides)
-        if np.any(cells_with_guides):
-            # Get guide counts for cells with guides
-            cells_with_guides_indices = np.where(found_mask & cells_with_guides)[0]
-            if len(cells_with_guides_indices) > 0:
-                # Map back to guide data indices
-                guide_data_indices = cell_indices_series.iloc[cells_with_guides_indices].astype(int).values
-                guide_counts_subset = guide_adata.X[guide_data_indices]
-
-                # Only count UMIs from guides above cutoff
-                binary_subset = (guide_counts_subset >= cutoff)
-                filtered_counts = guide_counts_subset.multiply(binary_subset)
-                umis_per_cell_with_guides = np.array(filtered_counts.sum(axis=1)).flatten()
-                guides_per_cell_with_guides = all_guides_per_cell[cells_with_guides]
-
-                umis_per_guide = umis_per_cell_with_guides / guides_per_cell_with_guides
-                metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = float(np.mean(umis_per_guide))
-            else:
-                metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = np.nan
-        else:
-            metrics[f'umis_per_guide_per_cell_cutoff{cutoff}'] = np.nan
-
-        # Total guides detected
-        metrics[f'total_guides_detected_cutoff{cutoff}'] = n_guides_detected
-        
-        # Total guide detections across all cells
-        metrics[f'total_guide_detections_cutoff{cutoff}'] = total_guide_detections
-
-        # Gene-level metrics if mapping provided
-        if guide_to_genes is not None and n_cells_found > 0:
-            if 'guide_names' not in guide_adata.uns:
-                log_print("Warning: 'guide_names' not found in guide adata.uns, skipping gene metrics")
-                metrics[f'total_targeted_genes_cutoff{cutoff}'] = 0
-            else:
-                guide_names = guide_adata.uns['guide_names']
-                unique_genes = set()
-                for i, guide_name in enumerate(guide_names):
-                    if guides_detected[i] and guide_name in guide_to_genes:
-                        unique_genes.update(guide_to_genes[guide_name])
-                metrics[f'total_targeted_genes_cutoff{cutoff}'] = len(unique_genes)
-        else:
-            metrics[f'total_targeted_genes_cutoff{cutoff}'] = 0
-
-    return metrics
+# Guide analysis functions moved to scripts/guide_analysis.py
 
 
 # =============================================================================
@@ -967,10 +964,8 @@ def normalize_and_preprocess(adata, use_gpu=False):
     adata_expressed = adata[:, genes_expressed].copy()
     log_print(f"📊 Created expressed genes dataset: {adata_expressed.shape}")
 
-    # Mark genes used for analysis
-    adata.var["hvg_input"] = genes_expressed
-
     # Calculate HVGs on raw counts (Seurat v3 approach)
+    # Note: hvg_input column not needed since adata_expressed contains exactly those genes
     # TODO: Make n_top_genes configurable (currently hardcoded to 2000)
     sc.pp.highly_variable_genes(adata_expressed, flavor="seurat_v3", n_top_genes=2000, subset=False)
 
@@ -1055,7 +1050,9 @@ def perform_clustering(adata, use_gpu=False, target_clusters=3):
 
     # Rename leiden columns to clustersN_resX format and remove originals
     log_print("🔄 Renaming leiden columns to clustersN_resX format...")
-    leiden_cols = [col for col in adata.obs.columns if col.startswith('leiden_')]
+    # Use pandas string operations for efficient filtering
+    leiden_mask = adata.obs.columns.str.startswith('leiden_')
+    leiden_cols = adata.obs.columns[leiden_mask].tolist()
     for col in leiden_cols:
         resolution_val = col.replace('leiden_', '')
         n_clusters = len(adata.obs[col].unique())
@@ -1194,5 +1191,13 @@ def map_cells_to_samples_from_sample_info(adata, sample_info_file):
     sample annotation functionality similar to statin_perturb.
     """
     raise NotImplementedError("Sample mapping functionality not yet implemented for main pipeline")
+
+
+# =============================================================================
+# 8. GUIDE THRESHOLD UTILITIES
+# =============================================================================
+
+
+# Guide cutoff utilities moved to scripts/guide_analysis.py
 
 
