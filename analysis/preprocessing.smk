@@ -25,7 +25,7 @@ from scripts.snakemake_helpers import (
     load_sample_info, get_sample_ids, get_samples_by_type,
     extract_pool, extract_sample, get_sample_pool,
     # File finding functions
-    find_fastq_file, print_sample_summary,
+    find_processed_fastq, print_sample_summary,
     # Output generation functions
     get_preprocessing_outputs
 )
@@ -52,9 +52,9 @@ guide_to_gex, gex_to_guide = get_guide_gex_pairings(config['sample_info_file'])
 # Print sample summary
 print_sample_summary(config)
 
-# Wrapper function for find_fastq_file to pass SCRATCH
-def find_fastq_file_wrapper(sample_id, read, source=None, processing=None):
-    return find_fastq_file(sample_id, read, source, processing, config, scratch_base=SCRATCH)
+# Wrapper function for find_processed_fastq to pass SCRATCH
+def find_fastq_file_wrapper(sample_id, read, source, processing):
+    return find_processed_fastq(sample_id, read, source, processing, config, SCRATCH)
 
 # Wrapper function for load_sample_info  
 def load_sample_info_wrapper():
@@ -104,185 +104,20 @@ rule generate_gene_annotation_table:
 # =============================================================================
 # STAGE 1: INPUT PROCESSING AND COUNTING
 # =============================================================================
-rule count_reads:
-    input:
-        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
-        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw")
-    output:
-        f"{RESULTS}/{{sample_id}}/counts.txt"
-    log:
-        f"{LOGS}/count_reads_{{sample_id}}.log"
-    threads: config["resources"]["light"]["threads"]
-    resources:
-        mem_mb=config["resources"]["light"]["mem_mb"],
-    shell:
-        f"""
-        echo "R1_reads,R2_reads" > {output}
-        R1_COUNT=$(pigz -cd -p {threads} {input.fq1} | echo $((`wc -l`/4)))
-        R2_COUNT=$(pigz -cd -p {threads} {input.fq2} | echo $((`wc -l`/4)))
-        echo "$R1_COUNT,$R2_COUNT" >> {output}
-        """
 
 
-rule calculate_pool_statistics:
-    """Calculate pool-level statistics including undetermined read fraction"""
-    input:
-        # All sample count files for the pool
-        sample_counts=lambda wildcards: [f"{RESULTS}/{row['sample_id']}/counts.txt"
-                                        for _, row in load_sample_info(config).iterrows() 
-                                        if row['pool'] == wildcards.pool],
-        # Undetermined count file - using existing count_reads rule
-        undetermined_counts=f"{RESULTS}/{{pool}}:Undetermined/counts.txt",
-        script="scripts/calculate_pool_statistics.py"
-    output:
-        stats=f"{RESULTS}/preprocessing_report/data/per_pool/main_raw/{{pool}}/pool_statistics.tsv"
-    log:
-        f"{LOGS}/calculate_pool_statistics_{{pool}}.log"
-    params:
-        pool="{pool}"
-    shell:
-        """
-        python3 {input.script} \
-            --pool {params.pool} \
-            --sample-counts {input.sample_counts} \
-            --undetermined-counts {input.undetermined_counts} \
-            --output {output.stats} &> {log}
-        """
+
+
+
 
 
 
 # =============================================================================
-# STAGE 2: UNDETERMINED RECOVERY AND BARCODE CORRECTION
+# STAGE 2: CROSS-RUN MERGING
 # =============================================================================
-rule check_undetermined_barcodes:
-    input:
-        script="scripts/recover_undetermined_barcodes_simple.py"
-    output:
-        report=f"{SCRATCH}/undetermined_index/{{pool}}/recovery_summary.txt"
-    log:
-        f"{LOGS}/undetermined_recovery_{{pool}}.log"
-    params:
-        fastq_dir=lambda wildcards: get_raw_data_path(wildcards.pool, config),
-        outdir=f"{SCRATCH}/undetermined_index/{{pool}}",
-        max_open_files=config["undetermined_recovery"]["max_open_files"]
-    shell:
-        """
-        # Find undetermined FASTQ files for this pool
-        UNDETERMINED_R1=$(find {params.fastq_dir} -name "*Undetermined*R1*.fastq.gz" | head -1)
-        UNDETERMINED_R2=$(find {params.fastq_dir} -name "*Undetermined*R2*.fastq.gz" | head -1)
-        
-        if [ -f "$UNDETERMINED_R1" ] && [ -f "$UNDETERMINED_R2" ]; then
-            python3 -u {input.script} \
-                --fastq-r1 "$UNDETERMINED_R1" \
-                --fastq-r2 "$UNDETERMINED_R2" \
-                --indices "{config[input_paths][primer_info_file]}" \
-                --output-dir {params.outdir} &> {log}
-        else
-            echo "Undetermined FASTQ files not found for {wildcards.pool}" > {output.report}
-            echo "Searched in: {params.fastq_dir}" >> {output.report}
-            echo "R1 file: $UNDETERMINED_R1" >> {output.report}
-            echo "R2 file: $UNDETERMINED_R2" >> {output.report}
-        fi
-        """
+# NOTE: Per-run processing (lane-level recovery + per-run concatenation) is handled by per_run_processing.smk
+# This stage merges samples that appear in multiple sequencing runs
 
-
-rule create_undetermined_fastq:
-    input:
-        recovery_summary=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}/recovery_summary.txt",
-        sample_info=config["sample_info_file"],
-        primer_info=config["input_paths"]["primer_info_file"],
-        script="scripts/create_undetermined_single_sample.py"
-    output:
-        r1=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R1.fastq.gz",
-        r2=f"{SCRATCH}/undetermined_fastqs/{{sample_id}}_R2.fastq.gz"
-    log:
-        f"{LOGS}/create_undetermined_{{sample_id}}.log"
-    params:
-        pool=lambda wildcards: extract_pool(wildcards.sample_id),
-        recovery_dir=lambda wildcards: f"{SCRATCH}/undetermined_index/{extract_pool(wildcards.sample_id)}",
-        output_dir=f"{SCRATCH}/undetermined_fastqs",
-        sample_id="{sample_id}"
-    shell:
-        """
-        python {input.script} \
-            --sample-info {input.sample_info} \
-            --primer-info {input.primer_info} \
-            --recovery-dir {params.recovery_dir} \
-            --sample-id {params.sample_id} \
-            --output-r1 {output.r1} \
-            --output-r2 {output.r2} \
-            --min-reads 1000 &> {log}
-        """
-
-
-rule barcode_recovery:
-    input:
-        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", wildcards.source, "raw"),
-        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, "raw"),
-        barcodes=config["input_paths"]["barcodes_file"],
-        script="scripts/recover_barcodes_simple.py"
-    output:
-        r1_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R1.fastq.gz",
-        r2_recovered=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_recovered_R2.fastq.gz",
-        stats=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}_stats.txt"
-    log:
-        f"{LOGS}/barcode_recovery_{{sample_id}}_{{source}}.log"
-    params:
-        outdir=f"{SCRATCH}/barcode_recovery/{{source}}",
-        output_prefix=f"{SCRATCH}/barcode_recovery/{{source}}/{{sample_id}}",
-        max_reads=config["barcode_recovery"]["max_reads_recovery"],
-        max_shift=config["barcode_recovery"]["max_shift"]
-    shell:
-        """
-        # Build command with optional parameters
-        CMD="python {input.script} \
-            {input.fq1} \
-            {input.fq2} \
-            {params.output_prefix} \
-            --barcode-file {input.barcodes} \
-            --max-shift {params.max_shift}"
-        
-        # Add max-reads if specified
-        if [ -n "{params.max_reads}" ] && [ "{params.max_reads}" != "None" ]; then
-            CMD="$CMD --max-reads {params.max_reads}"
-        fi
-        
-        $CMD &> {log}
-        """
-
-
-rule merge_all_fastqs:
-    """Merge all FASTQs for a sample: main raw + main recovered + undetermined raw + undetermined recovered"""
-    input:
-        # Main reads (raw)
-        main_raw_r1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
-        main_raw_r2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw"),
-        main_recovered_r1=lambda wildcards: f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_recovered_R1.fastq.gz",
-        main_recovered_r2=lambda wildcards: f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_recovered_R2.fastq.gz",
-        # Undetermined reads (raw)
-        undetermined_raw_r1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "undetermined", "raw"),
-        undetermined_raw_r2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "undetermined", "raw"),
-        undetermined_recovered_r1=lambda wildcards: f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R1.fastq.gz",
-        undetermined_recovered_r2=lambda wildcards: f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_recovered_R2.fastq.gz",
-        # Ensure all prerequisites are done
-        deps=lambda wildcards: [
-            f"{SCRATCH}/barcode_recovery/main/{wildcards.sample_id}_stats.txt",
-            f"{SCRATCH}/undetermined_fastqs/{wildcards.sample_id}_R1.fastq.gz",
-            f"{SCRATCH}/barcode_recovery/undetermined/{wildcards.sample_id}_stats.txt"
-        ]
-    output:
-        merged_r1=f"{SCRATCH}/merged_fastqs/{{sample_id}}_all_merged_R1.fastq.gz",
-        merged_r2=f"{SCRATCH}/merged_fastqs/{{sample_id}}_all_merged_R2.fastq.gz"
-    log:
-        f"{LOGS}/merge_all_fastqs_{{sample_id}}.log"
-    shell:
-        """
-        # Merge R1 files
-        cat {input.main_raw_r1} {input.main_recovered_r1} {input.undetermined_raw_r1} {input.undetermined_recovered_r1} > {output.merged_r1}
-        
-        # Merge R2 files  
-        cat {input.main_raw_r2} {input.main_recovered_r2} {input.undetermined_raw_r2} {input.undetermined_recovered_r2} > {output.merged_r2}
-        """
 
 
 
@@ -354,8 +189,7 @@ rule kallisto_gex:
         t2g=f"{REFERENCES}/nascent_all/t2g.txt",
         cdna=f"{REFERENCES}/nascent_all/cdna.txt",
         nascent=f"{REFERENCES}/nascent_all/nascent.txt",
-        # Ensure barcode recovery is done first if processing recovered reads
-        recovery_done=lambda wildcards: f"{SCRATCH}/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
+        # No dependencies needed - files are already created by prepare_fastq.smk
         # Script dependency
         script="scripts/run_kb_count.py"
     output:
@@ -407,8 +241,7 @@ rule kallisto_guide:
         replace=config["input_paths"]["replace_file"],
         index_idx=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/mismatch.idx",
         t2g=f"kite_references/{os.path.splitext(os.path.basename(config['guide_file']))[0]}_index/t2g.txt",
-        # Ensure barcode recovery is done first if processing recovered reads
-        recovery_done=lambda wildcards: f"{SCRATCH}/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
+        # No dependencies needed - files are already created by prepare_fastq.smk
         # Script dependency
         script="scripts/run_kb_count.py"
     output:
@@ -649,27 +482,6 @@ rule calculate_read_statistics:
 # =============================================================================
 # STAGE 6: QC AND ANALYSIS
 # =============================================================================
-rule fastp_qc:
-    input:
-        fq1=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R1", "main", "raw"),
-        fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", "main", "raw")
-    output:
-        json=f"{RESULTS}/{{sample_id}}/qc/fastp_report.json",
-        html=f"{RESULTS}/{{sample_id}}/qc/fastp_report.html"
-    params:
-        outdir=f"{RESULTS}/{{sample_id}}/qc",
-        pool=lambda wildcards: extract_pool(wildcards.sample_id),
-        sample=lambda wildcards: extract_sample(wildcards.sample_id)
-    log:
-        f"{LOGS}/fastp_qc_{{sample_id}}.log"
-    shell:
-        """
-        fastp -i {input.fq1} -I {input.fq2} \
-              --json {output.json} --html {output.html} \
-              --thread {threads} \
-              --dont_eval_duplication \
-              --report_title "{params.pool}_{params.sample}_QC_Report"
-        """
 
 
 rule cell_calling_analysis:
@@ -852,7 +664,7 @@ rule calculate_qc_metrics_sample:
             --processing {wildcards.processing} \
             --qc-cell-lists {input.qc_lists} \
             --threads {threads} \
-            --per-cell-plot-method {config[cell_calling][default_method]} &> {log}
+            --per-cell-plot-method {config['cell_calling']['default_method']} &> {log}
         """
 
 rule calculate_qc_metrics_biological:
@@ -893,7 +705,7 @@ rule calculate_qc_metrics_biological:
             --source {wildcards.source} \
             --processing {wildcards.processing} \
             --threads {threads} \
-            --per-cell-plot-method {config[cell_calling][default_method]} &> {log}
+            --per-cell-plot-method {config['cell_calling']['default_method']} &> {log}
         """
 
 rule calculate_qc_metrics_well:
@@ -934,7 +746,7 @@ rule calculate_qc_metrics_well:
             --source {wildcards.source} \
             --processing {wildcards.processing} \
             --threads {threads} \
-            --per-cell-plot-method {config[cell_calling][default_method]} &> {log}
+            --per-cell-plot-method {config['cell_calling']['default_method']} &> {log}
         """
 
 
@@ -1199,7 +1011,7 @@ rule generate_preprocessing_report:
             --sample-info {input.sample_info} \
             --dashboard-script {input.dashboard_script} \
             --output-archive {RESULTS}/qc_dashboard_preprocessing_{params.timestamp}.tar.gz \
-            --per-cell-method-filter {config[cell_calling][default_method]} \
+            --per-cell-method-filter {config['cell_calling']['default_method']} \
             --guide-cutoff-filter 1,2 \
             --threads {threads} &> {log}
         

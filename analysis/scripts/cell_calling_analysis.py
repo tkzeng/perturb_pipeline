@@ -145,7 +145,7 @@ def get_cell_calling_params(config, sample_id):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    sample_df = pd.read_excel(sample_info_file)
+    sample_df = pd.read_csv(sample_info_file, sep='\t')
     
     sample_row = sample_df[sample_df['sample_id'] == sample_id]
     if sample_row.empty:

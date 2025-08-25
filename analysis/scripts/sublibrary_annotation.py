@@ -314,7 +314,7 @@ def main():
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    sample_df = pd.read_excel(sample_info_file)
+    sample_df = pd.read_csv(sample_info_file, sep='\t')
     sample_row = sample_df[sample_df['sample_id'] == args.sample_id]
     
     if sample_row.empty:

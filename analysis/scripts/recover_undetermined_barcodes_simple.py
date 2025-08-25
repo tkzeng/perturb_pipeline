@@ -17,16 +17,46 @@ def reverse_complement(seq):
     complement = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C', 'N': 'N'}
     return ''.join(complement.get(base, base) for base in seq[::-1])
 
-def load_indices(indices_file):
-    """Load all indices into separate dictionaries for direct and RC."""
+def detect_fastq_index_lengths(r1_file):
+    """Auto-detect index lengths from FASTQ file by sampling reads."""
+    print(f"Detecting index lengths from {r1_file}...")
+    
+    with pysam.FastxFile(r1_file) as f:
+        idx1_lengths = []
+        idx2_lengths = []
+        
+        for i, read in enumerate(f):
+            if i >= 100:  # Sample first 100 reads
+                break
+                
+            # Extract indices from comment field
+            parts = read.comment.split(':')
+            if len(parts) >= 4 and '+' in parts[-1]:
+                indices = parts[-1].split('+')
+                if len(indices) == 2:
+                    idx1_lengths.append(len(indices[0]))
+                    idx2_lengths.append(len(indices[1]))
+        
+        if not idx1_lengths:
+            raise ValueError("Could not detect index lengths from FASTQ file - no valid indices found")
+        
+        # Check consistency
+        idx1_len = max(set(idx1_lengths), key=idx1_lengths.count)
+        idx2_len = max(set(idx2_lengths), key=idx2_lengths.count)
+        
+        print(f"Detected FASTQ index lengths: Index1={idx1_len}bp, Index2={idx2_len}bp")
+        print(f"Based on {len(idx1_lengths)} reads sampled")
+        
+        return idx1_len, idx2_len
+
+def load_indices(indices_file, fastq_idx1_len=None, fastq_idx2_len=None):
+    """Load all indices into separate dictionaries for direct and RC, handling length mismatches."""
     print(f"Loading indices from {indices_file}")
     
     df = pd.read_excel(indices_file, header=None)
     
-    # Separate dictionaries for direct and reverse complement
-    index_direct = {}  # Direct sequences
-    index_rc = {}      # Reverse complement sequences
-    
+    # Load raw indices first
+    raw_indices = {}
     for _, row in df.iterrows():
         name = str(row.iloc[1]).strip()  # Column 1: name (Split P5_A1, etc.)
         index_seq = str(row.iloc[3]).strip().upper()  # Column 3: index sequence
@@ -35,10 +65,67 @@ def load_indices(indices_file):
         assert pd.notna(name), f"Name is NaN in row {_}"
         assert pd.notna(index_seq), f"Index sequence is NaN in row {_}"
         
-        index_direct[index_seq] = name
-        index_rc[reverse_complement(index_seq)] = name
+        raw_indices[index_seq] = name
     
-    print(f"Loaded {len(index_direct)} direct indices and {len(index_rc)} RC indices")
+    # Detect reference index length
+    ref_lengths = set(len(idx) for idx in raw_indices.keys())
+    if len(ref_lengths) != 1:
+        raise ValueError(f"Reference indices have inconsistent lengths: {ref_lengths}")
+    
+    ref_len = list(ref_lengths)[0]
+    print(f"Reference index length: {ref_len}bp")
+    
+    # Build final dictionaries - handle RC BEFORE truncation
+    index_direct = {}
+    index_rc = {}
+    
+    target_len = fastq_idx1_len if fastq_idx1_len is not None else ref_len
+    
+    if fastq_idx1_len is not None:
+        print(f"FASTQ index length: {target_len}bp")
+        
+        if ref_len > target_len:
+            print(f"Truncating reference indices from {ref_len}bp to {target_len}bp")
+            
+            # Check for collisions after truncation
+            truncated_direct = {}
+            truncated_rc = {}
+            
+            for original_seq, name in raw_indices.items():
+                # Truncate direct
+                direct_truncated = original_seq[:target_len]
+                # RC full sequence first, then truncate
+                rc_truncated = reverse_complement(original_seq)[:target_len]
+                
+                # Check for collisions
+                if direct_truncated in truncated_direct:
+                    print(f"WARNING: Direct collision for {direct_truncated}: {truncated_direct[direct_truncated]} vs {name}")
+                else:
+                    truncated_direct[direct_truncated] = name
+                    
+                if rc_truncated in truncated_rc:
+                    print(f"WARNING: RC collision for {rc_truncated}: {truncated_rc[rc_truncated]} vs {name}")
+                else:
+                    truncated_rc[rc_truncated] = name
+            
+            index_direct = truncated_direct
+            index_rc = truncated_rc
+            
+        elif ref_len == target_len:
+            print("Reference and FASTQ index lengths match - using as-is")
+            for index_seq, name in raw_indices.items():
+                index_direct[index_seq] = name
+                index_rc[reverse_complement(index_seq)] = name
+                
+        else:  # ref_len < target_len
+            raise ValueError(f"Reference indices ({ref_len}bp) shorter than FASTQ indices ({target_len}bp) - cannot handle this case")
+    else:
+        # No FASTQ length provided, use raw indices
+        for index_seq, name in raw_indices.items():
+            index_direct[index_seq] = name
+            index_rc[reverse_complement(index_seq)] = name
+    
+    print(f"Final: {len(index_direct)} direct indices and {len(index_rc)} RC indices")
     return index_direct, index_rc
 
 def test_matching(index_direct, index_rc):
@@ -46,9 +133,14 @@ def test_matching(index_direct, index_rc):
     print("\nRunning tests...")
     print("="*60)
     
+    # Detect index length and truncate test cases
+    index_length = len(list(index_direct.keys())[0])
+    
     test_cases = [
-        ("GAACTGAGCG", "GGGGGGGGGG"),
-        ("GGGGGGGGGG", "CGCTCCACGA")
+        ("GAACTGAGCG"[:index_length], "GGGGGGGGGG"[:index_length]),
+        ("GGGGGGGGGG"[:index_length], "CGCTCCACGA"[:index_length]),
+        ("CGCTCAGTTC"[:index_length], "GGGGGGGGGG"[:index_length]),  # RC of GAACTGAGCG
+        ("GGGGGGGGGG"[:index_length], "TCGTGGAGCG"[:index_length])   # RC of CGCTCCACGA
     ]
     
     for idx1, idx2 in test_cases:
@@ -277,8 +369,11 @@ def main():
     
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load indices
-    index_direct, index_rc = load_indices(args.indices)
+    # Auto-detect FASTQ index lengths
+    fastq_idx1_len, fastq_idx2_len = detect_fastq_index_lengths(args.fastq_r1)
+    
+    # Load indices with auto-detected lengths
+    index_direct, index_rc = load_indices(args.indices, fastq_idx1_len, fastq_idx2_len)
     
     # Run tests
     test_matching(index_direct, index_rc)

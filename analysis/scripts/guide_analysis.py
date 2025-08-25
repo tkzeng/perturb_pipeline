@@ -95,12 +95,18 @@ def map_guide_counts_to_gex_barcodes(guide_adata, gex_barcodes):
     
     found_indices = cell_indices_series.dropna().astype(int).values
     guide_counts_found = guide_adata.X[found_indices]
-    
-    full_matrix = scipy.sparse.lil_matrix((n_gex, n_guides))
     gex_indices = np.where(found_mask)[0]
-    full_matrix[gex_indices] = guide_counts_found
     
-    return full_matrix.tocsr()
+    # Build sparse matrix efficiently using COO format
+    guide_coo = guide_counts_found.tocoo()
+    row_indices = gex_indices[guide_coo.row]
+    col_indices = guide_coo.col
+    data = guide_coo.data
+    
+    full_matrix = scipy.sparse.csr_matrix((data, (row_indices, col_indices)), 
+                                          shape=(n_gex, n_guides))
+    
+    return full_matrix
 
 
 def calculate_guide_metrics_for_cells(guide_adata, cell_barcodes, guide_cutoffs, obs_data, method_name, stratify_by):

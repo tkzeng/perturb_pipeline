@@ -66,11 +66,11 @@ def get_sample_pool_from_id(config, sample_id):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    sample_df = pd.read_excel(sample_info_file)
+    sample_df = pd.read_csv(sample_info_file, sep='\t')
     sample_row = sample_df[sample_df['sample_id'] == sample_id]
     
     if sample_row.empty:
-        raise ValueError(f"Sample {sample_id} not found in sample_info.xlsx")
+        raise ValueError(f"Sample {sample_id} not found in sample_info.tsv")
     
     return sample_row.iloc[0]['pool']
 
@@ -1028,11 +1028,11 @@ def determine_sample_type(config, sample_id):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    sample_df = pd.read_excel(sample_info_file)
+    sample_df = pd.read_csv(sample_info_file, sep='\t')
     sample_row = sample_df[sample_df['sample_id'] == sample_id]
     
     if sample_row.empty:
-        raise ValueError(f"Sample {sample_id} not found in sample_info.xlsx")
+        raise ValueError(f"Sample {sample_id} not found in sample_info.tsv")
     
     return sample_row.iloc[0]['sample_type']
 

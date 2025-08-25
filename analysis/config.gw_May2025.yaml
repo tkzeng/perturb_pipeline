@@ -1,6 +1,6 @@
 
-analysis_name: "gw_pilot"
-sample_info_file: "gw_references/sample_info_pilot.tsv"
+analysis_name: "gw_May2025"
+sample_info_file: "gw_references/sample_info.may2025_pools.tsv"
 plate_maps_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/plate_maps.xlsx"
 guide_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/guides.txt"
 
@@ -14,7 +14,7 @@ slurm:
 
 # Processing combinations to run
 combinations:  # Which source/processing combinations to run
-  - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
+#- ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
   - ["all", "merged"]
 
 kallisto:
@@ -144,6 +144,11 @@ resources:
   light:
     mem_mb: 32000   # 32GB
     threads: 4
+  
+  # Single-threaded rules (file concatenation, simple merges)
+  single:
+    mem_mb: 16000   # 16GB
+    threads: 1
 
 # Sublibrary combination configuration
 combination:

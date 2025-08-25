@@ -71,22 +71,119 @@ def get_reference_path(*parts, config=None):
     return ref_base
 
 
-def get_raw_data_path(pool, config=None):
-    """Get raw data directory path for a pool from sample_info Excel
+def get_raw_data_path(pool, config):
+    """Get raw data directory paths for a pool from sample_info TSV
     
-    This function looks up the fastq_dir from sample_info.xlsx for any sample in the given pool.
-    All samples in a pool should have the same fastq_dir.
+    Returns list of fastq_dir paths (semicolon-separated values split into list)
     """
-    if config:
-        sample_df = load_sample_info(config)
-        pool_samples = sample_df[sample_df['pool'] == pool]
-        if not pool_samples.empty:
-            # All samples in a pool should have the same fastq_dir
-            fastq_dir = pool_samples.iloc[0]['fastq_dir']
-            return fastq_dir
+    sample_df = load_sample_info(config)
+    pool_samples = sample_df[sample_df['pool'] == pool]
+    if pool_samples.empty:
+        raise ValueError(f"Could not find fastq_dir for pool {pool} in sample_info.tsv")
     
-    # Fallback if no config or no samples found
-    raise ValueError(f"Could not find fastq_dir for pool {pool} in sample_info.xlsx")
+    fastq_dir = pool_samples.iloc[0]['fastq_dir']
+    # Split semicolon-separated directories
+    return [dir_path.strip() for dir_path in fastq_dir.split(';')]
+
+
+def get_undetermined_lane_files(pool, config):
+    """Get all undetermined lane files for a pool across all runs
+    
+    STRICT VALIDATION: ALL directories must contain undetermined files
+    
+    Returns list of tuples: (run_id, lane_file_base, full_r1_path, full_r2_path)
+    Example: ("run0", "Undetermined_S0_L001", "/path/run1/Undetermined_S0_L001_R1_001.fastq.gz", "/path/run1/Undetermined_S0_L001_R2_001.fastq.gz")
+    """
+    fastq_dirs = get_raw_data_path(pool, config)
+    lane_files = []
+    
+    for run_idx, fastq_dir in enumerate(fastq_dirs):
+        # Find all undetermined R1 files in this directory
+        r1_files = sorted(glob.glob(os.path.join(fastq_dir, "*Undetermined*R1*.fastq.gz")))
+        
+        if not r1_files:
+            raise FileNotFoundError(f"No undetermined R1 files found in directory: {fastq_dir}\nExpected pattern: *Undetermined*R1*.fastq.gz")
+        
+        run_lane_count = 0
+        for r1_file in r1_files:
+            # Extract base name (e.g., "Undetermined_S0_L001")
+            r1_basename = os.path.basename(r1_file)
+            # Remove _R1_001.fastq.gz suffix to get base
+            lane_base = r1_basename.replace("_R1_001.fastq.gz", "")
+            
+            # Construct corresponding R2 file path
+            r2_file = r1_file.replace("_R1_", "_R2_")
+            
+            # Verify R2 file exists
+            if os.path.exists(r2_file):
+                run_id = f"run{run_idx}"
+                lane_files.append((run_id, lane_base, r1_file, r2_file))
+                run_lane_count += 1
+            else:
+                raise FileNotFoundError(f"Missing R2 file for undetermined R1: {r1_file}\nExpected R2 file: {r2_file}")
+        
+        if run_lane_count == 0:
+            raise FileNotFoundError(f"No valid undetermined R1/R2 file pairs found in directory: {fastq_dir}")
+    
+    if not lane_files:
+        raise FileNotFoundError(f"No undetermined lane files found for pool '{pool}' in any directory")
+    
+    return lane_files
+
+
+def get_main_lane_files(sample_id, config):
+    """Get all main (non-undetermined) lane files for a sample across all runs
+    
+    STRICT VALIDATION: Sample must exist in ALL specified directories
+    
+    Returns list of tuples: (run_id, lane_file_base, full_r1_path, full_r2_path)
+    Example: ("run0", "GEX_S1_L001", "/path/run1/GEX_S1_L001_R1_001.fastq.gz", "/path/run1/GEX_S1_L001_R2_001.fastq.gz")
+    """
+    sample_df = load_sample_info(config)
+    sample_row = sample_df[sample_df['sample_id'] == sample_id]
+    if sample_row.empty:
+        raise ValueError(f"Sample ID '{sample_id}' not found in sample info file")
+    
+    fastq_dir_str = sample_row.iloc[0]['fastq_dir']
+    sample_name = extract_sample(sample_id)
+    
+    # Split semicolon-separated directories
+    fastq_dirs = [dir_path.strip() for dir_path in fastq_dir_str.split(';')]
+    
+    lane_files = []
+    for run_idx, fastq_dir in enumerate(fastq_dirs):
+        # Find all R1 files for this sample in this directory
+        r1_pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_R1_001.fastq.gz")
+        r1_files = sorted(glob.glob(r1_pattern))
+        
+        if not r1_files:
+            raise FileNotFoundError(f"Sample '{sample_name}' R1 files not found in directory: {fastq_dir}\nExpected pattern: {sample_name}*_S*_R1_001.fastq.gz")
+        
+        run_lane_count = 0
+        for r1_file in r1_files:
+            # Extract base name (e.g., "GEX_S1_L001") 
+            r1_basename = os.path.basename(r1_file)
+            # Remove _R1_001.fastq.gz suffix to get base
+            lane_base = r1_basename.replace("_R1_001.fastq.gz", "")
+            
+            # Construct corresponding R2 file path
+            r2_file = r1_file.replace("_R1_", "_R2_")
+            
+            # Verify R2 file exists
+            if os.path.exists(r2_file):
+                run_id = f"run{run_idx}"
+                lane_files.append((run_id, lane_base, r1_file, r2_file))
+                run_lane_count += 1
+            else:
+                raise FileNotFoundError(f"Missing R2 file for sample R1: {r1_file}\nExpected R2 file: {r2_file}")
+        
+        if run_lane_count == 0:
+            raise FileNotFoundError(f"No valid R1/R2 file pairs found for sample '{sample_name}' in directory: {fastq_dir}")
+    
+    if not lane_files:
+        raise FileNotFoundError(f"No lane files found for sample '{sample_id}' in any directory")
+    
+    return lane_files
 
 
 def print_path_configuration(config):
@@ -110,7 +207,7 @@ _sample_info_cache = None
 
 
 def load_sample_info(config):
-    """Load sample information from Excel file"""
+    """Load sample information from TSV file"""
     global _sample_info_cache
     if _sample_info_cache is not None:
         return _sample_info_cache
@@ -119,8 +216,8 @@ def load_sample_info(config):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
     
-    # Read the first sheet of the Excel file
-    df = pd.read_excel(sample_info_file)
+    # Read TSV file
+    df = pd.read_csv(sample_info_file, sep='\t')
     
     # Filter out 'other' samples - we don't process these
     df = df[df['sample_type'].isin(['gex', 'guide'])]
@@ -173,68 +270,66 @@ def get_sample_pool(sample_id):
 # File finding functions
 # =============================================================================
 
-def find_fastq_file(sample_id, read, source=None, processing=None, config=None, scratch_base=None):
-    """Find FASTQ file based on source and processing state
+def find_raw_fastq_files(sample_id, read, config):
+    """Find raw FASTQ files in sequencing directories (used by prepare_fastq.smk)
     
-    Args:
-        sample_id: Full sample ID in format 'pool:sample' (e.g., 'pool1:gex_1')
-        read: R1 or R2
-        source: main, undetermined, or all
-        processing: raw, recovered, or merged
-        config: Configuration dictionary
-        scratch_base: Base scratch directory (optional, will compute if not provided)
+    STRICT VALIDATION: Sample must exist in ALL specified directories
     """
-    # Extract pool and sample name from sample_id
-    pool = extract_pool(sample_id)
+    sample_df = load_sample_info(config)
+    sample_row = sample_df[sample_df['sample_id'] == sample_id]
+    if sample_row.empty:
+        raise ValueError(f"Sample ID '{sample_id}' not found in sample info file")
+    
+    fastq_dir_str = sample_row.iloc[0]['fastq_dir']
     sample_name = extract_sample(sample_id)
     
-    # Use provided scratch_base or compute it
-    if scratch_base is None:
-        scratch_base = get_scratch_path(config=config)
+    # Split semicolon-separated directories
+    fastq_dirs = [dir_path.strip() for dir_path in fastq_dir_str.split(';')]
     
-    # Define path patterns for most cases - use sample_name for filenames
+    all_matches = []
+    for fastq_dir in fastq_dirs:
+        # Try multi-lane pattern first
+        pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_L*_{read}_001.fastq.gz")
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            all_matches.extend(matches)
+        else:
+            # Fallback to single-lane pattern
+            pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_{read}_001.fastq.gz")
+            matches = sorted(glob.glob(pattern))
+            if matches:
+                all_matches.extend(matches)
+            else:
+                raise FileNotFoundError(f"Sample '{sample_name}' {read} files not found in directory: {fastq_dir}\nTried patterns: *_S*_L*_{read}_001.fastq.gz and *_S*_{read}_001.fastq.gz")
+    
+    if not all_matches:
+        raise FileNotFoundError(f"No {read} files found for sample '{sample_id}' in any directory")
+    
+    return all_matches
+
+
+def find_processed_fastq(sample_id, read, source, processing, config, scratch_base):
+    """Find processed FASTQ file in scratch directories (used by preprocessing.smk)"""
+    # Define path patterns
     path_patterns = {
         ("main", "raw"): None,  # Special handling below
-        ("main", "recovered"): os.path.join(scratch_base, "barcode_recovery", "main", f"{sample_id}_recovered_{read}.fastq.gz"),
+        ("main", "recovered"): os.path.join(scratch_base, "barcode_recovery", "main", f"{sample_id}_merged_recovered_{read}.fastq.gz"),
         ("undetermined", "raw"): os.path.join(scratch_base, "undetermined_fastqs", f"{sample_id}_{read}.fastq.gz"),
         ("undetermined", "recovered"): os.path.join(scratch_base, "barcode_recovery", "undetermined", f"{sample_id}_recovered_{read}.fastq.gz"),
         ("all", "merged"): os.path.join(scratch_base, "merged_fastqs", f"{sample_id}_all_merged_{read}.fastq.gz")
     }
     
-    # Special handling for main/raw
+    # Special handling for main/raw - always return concatenated path
     if source == "main" and processing == "raw":
-        if sample_name == "Undetermined":
-            # Get the fastq_dir from any sample in this pool
-            sample_df = load_sample_info(config)
-            pool_samples = sample_df[sample_df['pool'] == pool]
-            if not pool_samples.empty:
-                fastq_dir = pool_samples.iloc[0]['fastq_dir']
-                cmd = f"find {fastq_dir} -name '*Undetermined*{read}*.fastq.gz' | grep -v 'I1\\|I2' | head -1"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                if result.stdout.strip():
-                    return result.stdout.strip()
-        
-        sample_df = load_sample_info(config)
-        if not sample_df.empty:
-            # Look up by full sample_id (which includes pool)
-            sample_row = sample_df[sample_df['sample_id'] == sample_id]
-            if not sample_row.empty:
-                fastq_dir = sample_row.iloc[0]['fastq_dir']
-                # Try pattern with lane info first (e.g., _L001_) - use sample_name for filename
-                search_pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_L*_{read}_001.fastq.gz")
-                matches = glob.glob(search_pattern)
-                if matches:
-                    return matches[0]
-                # Try pattern without lane info (e.g., gex_1_S1_R1_001.fastq.gz)
-                search_pattern = os.path.join(fastq_dir, f"{sample_name}*_S*_{read}_001.fastq.gz")
-                matches = glob.glob(search_pattern)
-                if matches:
-                    return matches[0]
+        return os.path.join(scratch_base, "concatenated_lanes", f"{sample_id}_{read}.fastq.gz")
     
     # Use dictionary lookup for standard patterns
     key = (source, processing)
     if key in path_patterns:
-        return path_patterns[key]
+        path = path_patterns[key]
+        if path is None:
+            raise FileNotFoundError(f"Could not find {read} file for sample {sample_id} with source={source}, processing={processing}")
+        return path
     
     raise FileNotFoundError(f"Could not find {read} file for sample {sample_id} with source={source}, processing={processing}")
 
@@ -446,144 +541,3 @@ def get_downstream_outputs(config, combinations=None, as_dict=False, report_dir=
     else:
         return [item for sublist in outputs_dict.values() for item in sublist]
 
-
-def get_all_outputs(config, combinations=None, as_dict=False):
-    """Generate all expected output files including QC metrics
-    
-    IMPORTANT: Directory Structure for QC Dashboard
-    -----------------------------------------------
-    The Streamlit dashboard parses metadata from directory structure following these principles:
-    
-    1. Top-level categories define plot/data types (e.g., cell_calling, per_cell, saturation)
-    2. Second level is always {source}_{processing} (e.g., main_raw, all_merged)
-    3. Subsequent levels vary by category but follow consistent patterns within each category
-    4. All metadata comes from directory names, not filenames (except for backwards compatibility)
-    5. Scale (linear/log) should be a directory level, not part of the filename
-    
-    When adding new outputs:
-    - Keep consistent directory depth within each category
-    - Use descriptive directory names that will become filter options
-    - Consider if your output fits an existing category before creating a new one
-    - If creating a new category, update the dashboard's parse_path_metadata() function
-    
-    The dashboard automatically creates filters from directory structure, so thoughtful
-    organization improves user experience.
-    """
-    if combinations is None:
-        # Get combinations from config (top level)
-        combinations = config['combinations']
-        # Convert list of lists to list of tuples
-        combinations = [tuple(combo) for combo in combinations]
-    
-    # Initialize with standard categories
-    outputs_dict = {
-        'read_stats': [],
-        'cell_calling': [],
-        'qc_metrics': [],
-        'saturation': [],
-        'consolidated': [],
-        'umap': []  # UMAP plots from standard analyses
-        # Note: 'report' removed to avoid circular dependency when used in generate_qc_report
-    }
-    
-    # UMAP subsets are now contained within the main umap directory, so no separate categories needed
-    
-    sample_df = load_sample_info(config)
-    
-    # First, iterate through all samples to generate per-sample outputs
-    for _, row in sample_df.iterrows():
-        pool = row['pool']
-        sample_id = row['sample_id']  # e.g., "pool1:gex_1"
-        sample_name = extract_sample(sample_id)  # e.g., "gex_1"
-        sample_type = row['sample_type']
-        
-        for source, processing in combinations:
-            # Read statistics - use sample_id in directories
-            if sample_type == 'gex':
-                outputs_dict['read_stats'].append(
-                    f"{get_results_path(config=config)}/{sample_id}/qc/{sample_id}_all_{source}_{processing}_read_statistics.tsv"
-                )
-            else:  # guide
-                outputs_dict['read_stats'].append(
-                    f"{get_results_path(config=config)}/{sample_id}/qc/{sample_id}_guide_{source}_{processing}_read_statistics.tsv"
-                )
-            
-            # Cell calling and QC metrics for GEX samples only
-            if sample_type == 'gex':
-                # Cell calling outputs - use sample_id for directory structure
-                outputs_dict['cell_calling'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/{source}_{processing}/{sample_id}/cell_calling"
-                )
-                outputs_dict['cell_calling'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/plots/cell_calling/{source}_{processing}/{sample_id}"
-                )
-                outputs_dict['cell_calling'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/plots/cell_calling/{source}_{processing}/{sample_id}.complete"
-                )
-                
-                # QC metrics - all three levels (TSVs serve as sentinels for plot completion)
-                for level in ['by_sample.tsv', 'by_biological_sample.tsv', 'by_well.tsv']:
-                    outputs_dict['qc_metrics'].append(
-                        f"{get_results_path(config=config)}/{report_dir}/data/per_sample/{source}_{processing}/{sample_id}/qc_metrics/{level}"
-                    )
-                
-                # Note: Per-cell and cell_quality_qc plot directories are created by QC rules but can't be declared as outputs
-                # since multiple rules write to the same directory. The packaging script will discover these directories.
-    
-    # Saturation analysis for main/raw only - iterate through samples
-    if ('main', 'raw') in combinations:
-        for _, row in sample_df.iterrows():
-            pool = row['pool']
-            sample_id = row['sample_id']  # e.g., "pool1:gex_1"
-            sample_name = extract_sample(sample_id)  # e.g., "gex_1"
-            sample_type = row['sample_type']
-            
-            if sample_type == 'gex':
-                # GEX saturation - use sample_id for directory structure
-                outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/main_raw/{sample_id}/saturation/umi_saturation.tsv"
-                )
-                outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/plots/saturation/main_raw/gex/{sample_id}"
-                )
-            elif sample_type == 'guide':
-                # Guide saturation - use sample_id for directory structure
-                outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/data/per_sample/main_raw/{sample_id}/saturation/guide_umi_saturation.tsv"
-                )
-                outputs_dict['saturation'].append(
-                    f"{get_results_path(config=config)}/{report_dir}/plots/saturation/main_raw/guide/{sample_id}"
-                )
-        
-        # Pool statistics - uses the filtered sample_df so pool1000/1001 are excluded when needed
-        pools = sample_df['pool'].unique()
-        outputs_dict['qc_metrics'].extend(
-            [f"{get_results_path(config=config)}/{report_dir}/data/per_pool/main_raw/{pool}/pool_statistics.tsv"
-             for pool in pools]
-        )
-        outputs_dict['consolidated'].append(f"{get_results_path(config=config)}/{report_dir}/data/consolidated/main_raw/by_pool.tsv")
-    
-    # Consolidated outputs for each combination
-    for source, processing in combinations:
-        outputs_dict['consolidated'].extend([
-            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/all_metrics.tsv",
-            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/by_biological_sample.tsv",
-            f"{get_results_path(config=config)}/{report_dir}/data/consolidated/{source}_{processing}/by_well.tsv",
-            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_general/{source}_{processing}",
-            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_cell_based/{source}_{processing}",
-            f"{get_results_path(config=config)}/{report_dir}/plots/consolidated_{source}_{processing}.complete"
-        ])
-        
-        # Add UMAP plots (created by downstream.smk after standard analyses)
-        # These are included in the dictionary but only used by generate_final_report
-        if 'combined_sublibraries' in config:
-            # Add both the directory and the completion marker (like other plot categories)
-            outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}")
-            outputs_dict['umap'].append(f"{get_results_path(config=config)}/{report_dir}/plots/umap/{source}_{processing}.complete")
-            
-            # UMAP subsets are now contained within main umap directory
-    
-    if as_dict:
-        return outputs_dict
-    else:
-        return [item for sublist in outputs_dict.values() for item in sublist]

@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument('--qc-report-dir', required=True,
                         help='Path to QC report directory (contains plots/ and data/ subdirectories)')
     parser.add_argument('--sample-info', required=True,
-                        help='Path to sample_info.xlsx')
+                        help='Path to sample_info.tsv')
     parser.add_argument('--output-archive', required=True,
                         help='Output tar.gz file path')
     parser.add_argument('--dashboard-script', 
@@ -156,7 +156,7 @@ def create_archive_directly(args):
             tar.add(args.dashboard_script, arcname=f'{folder_name}/streamlit_qc_dashboard.py')
             
             # Add sample info
-            tar.add(args.sample_info, arcname=f'{folder_name}/sample_info.xlsx')
+            tar.add(args.sample_info, arcname=f'{folder_name}/sample_info.tsv')
             
             # Add metric glossary if it exists
             metric_glossary_path = Path(args.dashboard_script).parent / 'metric_glossary.tsv'
@@ -198,7 +198,7 @@ The dashboard will open in your browser at http://localhost:8501
 
 FILES INCLUDED:
 - streamlit_qc_dashboard.py: Interactive dashboard
-- sample_info.xlsx: Sample metadata
+- sample_info.tsv: Sample metadata
 - metric_glossary.tsv: Metric definitions and descriptions
 - plots/: All QC plots organized by category
 - data/: Tabular QC data

@@ -60,27 +60,27 @@ DEFAULT_ARGS=(
     --allowed-rules \
         all \
         # STAGE 0: Reference preparation \
-        #generate_gene_annotation_table \
+        generate_gene_annotation_table \
         # STAGE 1: Input processing and counting \
-        #count_reads \
-        #calculate_pool_statistics \
+        count_reads \
+        calculate_pool_statistics \
         # STAGE 2: Undetermined recovery and barcode correction \
-        #check_undetermined_barcodes \
-        #create_undetermined_fastq \
-        #barcode_recovery \
-        #merge_all_fastqs \
+        check_undetermined_barcodes \
+        create_undetermined_fastq \
+        barcode_recovery \
+        merge_all_fastqs \
         # STAGE 3: Reference preparation \
-        #kite_index \
-        #generate_combined_whitelist \
+        kite_index \
+        generate_combined_whitelist \
         # STAGE 4: Alignment \
         #kallisto_gex \
         #kallisto_guide \
-        #kallisto_gex_subsampled \
-        #kallisto_guide_subsampled \
+        kallisto_gex_subsampled \
+        kallisto_guide_subsampled \
         # STAGE 5: Post-alignment processing \
-        #inspect_bus_files \
+        inspect_bus_files \
         filter_and_annotate_sublibrary \
-        #calculate_read_statistics \
+        calculate_read_statistics \
         # STAGE 6: QC and analysis \
         #fastp_qc \
         cell_calling_analysis \

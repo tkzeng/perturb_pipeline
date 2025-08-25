@@ -29,12 +29,14 @@ def load_index_mappings(primer_file):
     
     return seq_to_name, name_to_seq
 
-def find_matching_files(recovery_dir, i7_seq, i5_seq, seq_to_name):
+def find_matching_files(recovery_dirs, i7_seq, i5_seq, seq_to_name):
     """Find all files matching the given i7/i5 sequences in any combination"""
     matches = []
     
-    # Get all R1 files (to avoid counting twice)
-    all_files = glob.glob(os.path.join(recovery_dir, "*_R1.fastq.gz"))
+    # Get all R1 files from all directories (to avoid counting twice)
+    all_files = []
+    for recovery_dir in recovery_dirs:
+        all_files.extend(glob.glob(os.path.join(recovery_dir, "*_R1.fastq.gz")))
     
     for filepath in all_files:
         filename = os.path.basename(filepath)
@@ -121,11 +123,11 @@ def create_dummy_fastq(output_file):
 def main():
     parser = argparse.ArgumentParser(description='Create undetermined FASTQ files for a single sample')
     parser.add_argument('--sample-info', required=True,
-                        help='Path to sample_info.xlsx file')
+                        help='Path to sample_info.tsv file')
     parser.add_argument('--primer-info', required=True,
                         help='Path to Split LP primer.xlsx file')
-    parser.add_argument('--recovery-dir', required=True,
-                        help='Path to undetermined recovery directory')
+    parser.add_argument('--recovery-dirs', nargs='+', required=True,
+                        help='Paths to undetermined recovery directories')
     parser.add_argument('--sample-id', required=True,
                         help='Full sample ID to process (format: pool:sample)')
     parser.add_argument('--output-r1', required=True,
@@ -139,7 +141,7 @@ def main():
     
     # Load sample info
     print(f"Loading sample info for {args.sample_id}")
-    sample_df = pd.read_excel(args.sample_info)
+    sample_df = pd.read_csv(args.sample_info, sep='\t')
     
     # Find the sample
     sample_row = sample_df[sample_df['sample_id'] == args.sample_id]
@@ -160,18 +162,19 @@ def main():
     # Load primer mappings
     seq_to_name, name_to_seq = load_index_mappings(args.primer_info)
     
-    # Load read counts from metadata if available
-    metadata_file = os.path.join(args.recovery_dir, 'undetermined_recovery_metadata.tsv')
+    # Load read counts from metadata if available (check all directories)
     read_counts = {}
-    if os.path.exists(metadata_file):
-        metadata_df = pd.read_csv(metadata_file, sep='\t')
-        for _, mrow in metadata_df.iterrows():
-            if '_R1.fastq.gz' in mrow['filename']:
-                base = mrow['filename'].replace('_R1.fastq.gz', '')
-                read_counts[base] = mrow['read_count']
+    for recovery_dir in args.recovery_dirs:
+        metadata_file = os.path.join(recovery_dir, 'undetermined_recovery_metadata.tsv')
+        if os.path.exists(metadata_file):
+            metadata_df = pd.read_csv(metadata_file, sep='\t')
+            for _, mrow in metadata_df.iterrows():
+                if '_R1.fastq.gz' in mrow['filename']:
+                    base = mrow['filename'].replace('_R1.fastq.gz', '')
+                    read_counts[base] = mrow['read_count']
     
     # Find matching files
-    matches = find_matching_files(args.recovery_dir, i7_seq, i5_seq, seq_to_name)
+    matches = find_matching_files(args.recovery_dirs, i7_seq, i5_seq, seq_to_name)
     
     # Filter for valid matches
     valid_matches = []
@@ -198,10 +201,19 @@ def main():
         
         for match in valid_matches:
             base = match['filename_base']
-            r1_file = os.path.join(args.recovery_dir, f"{base}_R1.fastq.gz")
-            r2_file = os.path.join(args.recovery_dir, f"{base}_R2.fastq.gz")
             
-            if os.path.exists(r1_file) and os.path.exists(r2_file):
+            # Find the file in one of the directories
+            r1_file = None
+            r2_file = None
+            for recovery_dir in args.recovery_dirs:
+                candidate_r1 = os.path.join(recovery_dir, f"{base}_R1.fastq.gz")
+                candidate_r2 = os.path.join(recovery_dir, f"{base}_R2.fastq.gz")
+                if os.path.exists(candidate_r1) and os.path.exists(candidate_r2):
+                    r1_file = candidate_r1
+                    r2_file = candidate_r2
+                    break
+            
+            if r1_file and r2_file:
                 input_files_r1.append(r1_file)
                 input_files_r2.append(r2_file)
                 print(f"  Including: {base} ({match['read_count']:,} reads)")

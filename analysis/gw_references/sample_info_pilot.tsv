@@ -1,0 +1,5 @@
+pool	sample	sample_id	sample_type	expected_cells	min_umi_threshold	fastq_dir	sample_to_well_mapping	i7_barcode	i5_barcode	notes	read1_length	read2_length	paired_guide_pool	paired_guide_sample	paired_guide_sample_id	sample_id_for_grouping
+pool1000	GEX	pool1000:GEX	gex	3000	3641.6666666666665	/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/data/250507_NB551514_0294_AHTYMNAFX7/fastq_files	plate4	AGGTCAGA	TATCTTGT		66	86	pool1000	GUIDE	pool1000:GUIDE	
+pool1001	GEX	pool1001:GEX	gex	50000	760.0	/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/data/250508_NB551514_0295_AHYGKNBGYW/fastq_files	plate4	ATTCCATA	CCACCAGG		66	86	pool1001	GUIDE	pool1001:GUIDE	
+pool1000	GUIDE	pool1000:GUIDE	guide	3000		/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/data/250507_NB551514_0294_AHTYMNAFX7/fastq_files	plate4	CACTCAAT	CACAACTT		66	86			
+pool1001	GUIDE	pool1001:GUIDE	guide	50000		/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/data/250508_NB551514_0295_AHYGKNBGYW/fastq_files	plate4	TCAATGGA	GTTGTAGT		66	86			

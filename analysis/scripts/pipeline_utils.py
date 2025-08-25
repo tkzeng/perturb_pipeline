@@ -4,7 +4,7 @@ Unified pipeline utilities for single-cell perturbation data processing.
 This module contains all utility functions and pipeline processing steps
 for the single-cell perturbation analysis pipeline, organized by function.
 
-Adapted for main pipeline structure - uses sample_info.xlsx instead of hardcoded configs.
+Adapted for main pipeline structure - uses sample_info.tsv instead of hardcoded configs.
 """
 
 import pandas as pd
@@ -63,7 +63,7 @@ def create_well_to_sample_mapping_from_plates(plate_name, plate_maps_file):
     plate_maps = pd.read_excel(plate_maps_file, sheet_name=None)
     
     if plate_name not in plate_maps:
-        raise ValueError(f"Plate {plate_name} not found in plate_maps.xlsx")
+        raise ValueError(f"Plate {plate_name} not found in plate_maps file")
     
     plate_df = plate_maps[plate_name]
     
@@ -145,16 +145,16 @@ def align_datasets_by_cells(adata1, adata2, name1, name2):
 
 
 def get_sample_pool_and_mapping(sample_id, sample_info_file):
-    """Get pool and sample-to-well mapping for a specific sample from sample_info.xlsx
+    """Get pool and sample-to-well mapping for a specific sample from sample_info.tsv
 
     Args:
         sample_id: Sample ID to look up (e.g., "pool1:gex_1")
-        sample_info_file: Path to sample_info.xlsx
+        sample_info_file: Path to sample_info.tsv
 
     Returns:
         tuple: (pool_name, sample_to_well_mapping_name)
     """
-    sample_df = pd.read_excel(sample_info_file)
+    sample_df = pd.read_csv(sample_info_file, sep='\t')
     sample_row = sample_df[sample_df['sample_id'] == sample_id]
 
     if sample_row.empty:
@@ -171,7 +171,7 @@ def load_sample_info(sample_info_file):
     """Load and validate sample info with guide-GEX pairings.
 
     Args:
-        sample_info_file: Path to sample_info.xlsx
+        sample_info_file: Path to sample_info.tsv
 
     Returns:
         pd.DataFrame: Sample info dataframe with validated columns
@@ -179,7 +179,7 @@ def load_sample_info(sample_info_file):
     if not os.path.exists(sample_info_file):
         raise FileNotFoundError(f"Sample info file not found: {sample_info_file}")
 
-    df = pd.read_excel(sample_info_file)
+    df = pd.read_csv(sample_info_file, sep='\t')
 
     # Validate required columns exist
     required_cols = ['sample_id', 'sample_type', 'pool']
@@ -205,7 +205,7 @@ def get_guide_gex_pairings(sample_info_file):
     Since sample_ids now include pool prefix (e.g., "pool1:gex_1"), they are globally unique.
 
     Args:
-        sample_info_file: Path to sample_info.xlsx
+        sample_info_file: Path to sample_info.tsv
 
     Returns:
         tuple: (guide_to_gex dict, gex_to_guide dict)
@@ -217,7 +217,7 @@ def get_guide_gex_pairings(sample_info_file):
     # Check if pairing column exists
     if 'paired_guide_sample_id' not in df.columns:
         raise ValueError(
-            "CRITICAL: 'paired_guide_sample_id' column is REQUIRED in sample_info.xlsx for guide-GEX pairing."
+            "CRITICAL: 'paired_guide_sample_id' column is REQUIRED in sample_info.tsv for guide-GEX pairing."
         )
 
     log_print("Building guide-GEX pairings from sample sheet")
@@ -263,7 +263,7 @@ def get_paired_sample(sample_id, sample_type, sample_info_file):
     Args:
         sample_id: Sample to find pair for
         sample_type: 'gex' or 'guide' (type of the input sample)
-        sample_info_file: Path to sample_info.xlsx
+        sample_info_file: Path to sample_info.tsv
 
     Returns:
         str: Paired sample ID
@@ -1185,7 +1185,7 @@ def cleanup_gpu_memory():
 
 
 def map_cells_to_samples_from_sample_info(adata, sample_info_file):
-    """Map cells to samples using sample_info.xlsx and sample-to-well mappings.
+    """Map cells to samples using sample_info.tsv and sample-to-well mappings.
 
     This is a placeholder for future implementation when you want to add
     sample annotation functionality similar to statin_perturb.
