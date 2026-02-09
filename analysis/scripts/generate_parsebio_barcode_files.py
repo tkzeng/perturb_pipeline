@@ -7,6 +7,7 @@ This script converts Parse Bio's bc_data CSV files into the format needed by the
 - replace.XX.txt: Maps random hexamer (R-type) to poly-T (T-type) barcodes
 
 Supported kits:
+- Chemistry v1: WT_mini (12-well), WT (48-well), WT_mega (96-well)
 - Chemistry v2: WT_mini (12-well), WT (48-well), WT_mega (96-well)
 - Chemistry v3: WT_mini (12-well), WT (48-well), WT_mega (96-well)
 
@@ -21,27 +22,44 @@ from pathlib import Path
 
 # Kit configuration mapping
 KIT_CONFIGS = {
+    'v1': {
+        'WT_mini': {
+            'bc1_csv': 'bc_data_n24_v4.csv',
+            'bc2_csv': 'bc_data_v1.csv',
+            'bc3_csv': 'bc_data_v1.csv',
+            'output_suffix': '12_v1',
+        },
+        'WT': {
+            'bc1_csv': 'bc_data_v2.csv',
+            'bc2_csv': 'bc_data_v1.csv',
+            'bc3_csv': 'bc_data_v1.csv',
+            'output_suffix': '48_v1',
+        },
+        'WT_mega': {
+            'bc1_csv': 'bc_data_n198_v5.csv',
+            'bc2_csv': 'bc_data_v1.csv',
+            'bc3_csv': 'bc_data_v1.csv',
+            'output_suffix': '96_v1',
+        }
+    },
     'v2': {
         'WT_mini': {
             'bc1_csv': 'bc_data_n24_v4.csv',
             'bc2_csv': 'bc_data_v1.csv',
             'bc3_csv': 'bc_data_v1.csv',
             'output_suffix': '12_v2',
-            'num_wells': 12
         },
         'WT': {
             'bc1_csv': 'bc_data_n99_v5.csv',
             'bc2_csv': 'bc_data_v1.csv',
             'bc3_csv': 'bc_data_v1.csv',
             'output_suffix': '48_v2',
-            'num_wells': 48
         },
         'WT_mega': {
             'bc1_csv': 'bc_data_n198_v5.csv',
             'bc2_csv': 'bc_data_v1.csv',
             'bc3_csv': 'bc_data_v1.csv',
             'output_suffix': '96_v2',
-            'num_wells': 96
         }
     },
     'v3': {
@@ -50,21 +68,18 @@ KIT_CONFIGS = {
             'bc2_csv': 'bc_data_v1.csv',
             'bc3_csv': 'bc_data_R3_v3.csv',
             'output_suffix': '12_v3',
-            'num_wells': 12
         },
         'WT': {
             'bc1_csv': 'bc_data_n141_R1_v3_6.csv',
             'bc2_csv': 'bc_data_v1.csv',
             'bc3_csv': 'bc_data_R3_v3.csv',
             'output_suffix': '48_v3',
-            'num_wells': 48
         },
         'WT_mega': {
             'bc1_csv': 'bc_data_n299_R1_v3_6.csv',
             'bc2_csv': 'bc_data_v1.csv',
             'bc3_csv': 'bc_data_R3_v3.csv',
             'output_suffix': '96_v3',
-            'num_wells': 96
         }
     }
 }
@@ -137,35 +152,26 @@ def process_kit(chemistry, kit_name, parsebio_dir, output_dir):
     print(f"  BC2 file: {config['bc2_csv']} ({len(df_bc2)} barcodes)")
     print(f"  BC3 file: {config['bc3_csv']} ({len(df_bc3)} barcodes)")
     
-    # Get the number of wells for this kit
-    num_wells = config['num_wells']
-    
     # Generate barcodes file
+    # The three columns (BC3, BC2, BC1) are independent whitelists, one per
+    # barcoding round. Each round always uses all of its barcodes regardless
+    # of kit size (e.g. R2 and R3 always have 96 barcodes, even for 12-well
+    # kits). Columns shorter than the longest are padded with '-' (wildcard).
     suffix = config['output_suffix']
     barcodes_file = Path(output_dir) / f"barcodes.{suffix}.txt"
-    
+
+    bc3_list = list(df_bc3['sequence'])
+    bc2_list = list(df_bc2['sequence'])
+    bc1_list = list(df_bc1_t['sequence']) + list(df_bc1_r['sequence'])
+
+    max_len = max(len(bc3_list), len(bc2_list), len(bc1_list))
+    bc3_list += ['-'] * (max_len - len(bc3_list))
+    bc2_list += ['-'] * (max_len - len(bc2_list))
+    bc1_list += ['-'] * (max_len - len(bc1_list))
+
     with open(barcodes_file, 'w') as f:
-        # Write T-type barcodes (poly-T primed)
-        # Format: BC3 BC2 BC1
-        for idx, row in df_bc1_t.iterrows():
-            bc1 = row['sequence']
-            # Use the barcode index to get corresponding BC2/BC3
-            bci = int(row['bci']) - 1  # Convert to 0-based index
-            
-            # Get BC2 and BC3 for this index (cycling through if needed)
-            bc2_idx = bci % len(df_bc2)
-            bc3_idx = bci % len(df_bc3)
-            
-            bc2 = df_bc2.iloc[bc2_idx]['sequence']
-            bc3 = df_bc3.iloc[bc3_idx]['sequence']
-            
+        for bc3, bc2, bc1 in zip(bc3_list, bc2_list, bc1_list):
             f.write(f"{bc3} {bc2} {bc1}\n")
-        
-        # Write R-type barcodes (random hexamer primed)
-        # Format: - - BC1
-        for idx, row in df_bc1_r.iterrows():
-            bc1 = row['sequence']
-            f.write(f"- - {bc1}\n")
     
     print(f"  Generated: {barcodes_file}")
     
@@ -221,6 +227,9 @@ def main():
     
     # Process all supported kits
     kits_to_process = [
+        ('v1', 'WT_mini'),
+        ('v1', 'WT'),
+        ('v1', 'WT_mega'),
         ('v2', 'WT_mini'),
         ('v2', 'WT'),
         ('v2', 'WT_mega'),
@@ -229,15 +238,8 @@ def main():
         ('v3', 'WT_mega'),
     ]
     
-    success_count = 0
     for chemistry, kit_name in kits_to_process:
-        try:
-            if process_kit(chemistry, kit_name, parsebio_dir, output_dir):
-                success_count += 1
-        except Exception as e:
-            print(f"Error processing {kit_name} (chemistry {chemistry}): {e}")
-    
-    print(f"\nSuccessfully generated files for {success_count}/{len(kits_to_process)} kits")
+        process_kit(chemistry, kit_name, parsebio_dir, output_dir)
 
 if __name__ == "__main__":
     main()

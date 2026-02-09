@@ -31,9 +31,14 @@ analysis:
   index_prefix: "nascent"
 
 input_paths:
+  # Chemistry v1 (same as v2 except 48-well kit):
+  # - 96-well kit: Use replace.96_v1.txt and barcodes.96_v1.txt
+  # - 48-well kit: Use replace.48_v1.txt and barcodes.48_v1.txt
+  # - Mini kit (12-well): Use replace.12_v1.txt and barcodes.12_v1.txt
+  #
   # Chemistry v2:
   # - 96-well kit: Use replace.96_v2.txt and barcodes.96_v2.txt
-  # - 48-well kit: Use replace.48_v2.txt and barcodes.48_v2.txt  
+  # - 48-well kit: Use replace.48_v2.txt and barcodes.48_v2.txt
   # - Mini kit (12-well): Use replace.12_v2.txt and barcodes.12_v2.txt
   #
   # Chemistry v3:
@@ -43,6 +48,11 @@ input_paths:
   replace_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/replace.96_v2_fixed.txt"
   barcodes_file: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/barcodes.96_v2.txt"
 
+  # Chemistry v1 (same as v2 except 48-well kit):
+  # - 96-well: bc_data_n198_v5.csv
+  # - 48-well: bc_data_v2.csv
+  # - 12-well: bc_data_n24_v4.csv
+  #
   # Chemistry v2:
   # - 96-well: bc_data_n198_v5.csv
   # - 48-well: bc_data_n99_v5.csv
