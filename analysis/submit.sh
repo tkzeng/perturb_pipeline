@@ -18,6 +18,7 @@ CONFIG_FILE="$CONFIG"
 # Extract SLURM settings from config file
 SLURM_PARTITION=$(python -c "import yaml; config = yaml.safe_load(open('$CONFIG_FILE')); print(config['slurm']['partition'])")
 SLURM_ACCOUNT=$(python -c "import yaml; config = yaml.safe_load(open('$CONFIG_FILE')); print(config['slurm']['account'])")
+analysis_name=$(python -c "import yaml; config = yaml.safe_load(open('$CONFIG_FILE')); print(config['analysis_name'])")
 
 # Ensure we're in the kb conda environment
 if [[ "$CONDA_DEFAULT_ENV" != "kb" ]]; then
@@ -71,7 +72,7 @@ DEFAULT_ARGS=(
         filter_and_annotate_sublibrary \
         calculate_read_statistics \
         # STAGE 6: QC and analysis \
-        #fastp_qc \
+        fastp_qc \
         cell_calling_analysis \
         cell_calling_plots \
         calculate_qc_metrics_stratified \
@@ -95,6 +96,7 @@ fi
 DEFAULT_ARGS+=(--configfile "$CONFIG_FILE")
 
 echo "Using config file: $CONFIG_FILE"
+echo "Analysis name: ${analysis_name}"
 echo "EXECUTING: snakemake ${DEFAULT_ARGS[@]} $@"
 
 snakemake "${DEFAULT_ARGS[@]}" "$@"

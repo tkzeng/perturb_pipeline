@@ -510,8 +510,9 @@ def add_mitochondrial_metrics(adata):
         raise RuntimeError(
             "CRITICAL: Gene symbols required for mitochondrial gene detection. Run gene annotation first."
         )
-
-    mt_genes = adata.var['gene'].str.startswith("MT-", na=False)
+    # make sure both mouse or human can be identified
+    mt_genes = adata.var["gene"].astype(str).str.upper().str.startswith("MT-", na=False)
+    #mt_genes = adata.var['gene'].str.startswith("MT-", na=False)
     log_print(f"📊 Using gene symbols: found {mt_genes.sum()} MT genes")
 
     if mt_genes.sum() == 0:
@@ -578,8 +579,7 @@ def apply_cell_filters(adata, config=None):
 # 5. GENE ANNOTATION & FILTERING
 # =============================================================================
 
-
-def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path):
+def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path, species = 'human'):
     """Add comprehensive gene annotations to var dataframe.
     
     Parameters:
@@ -594,39 +594,48 @@ def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_databas
         Path to cell cycle genes file
     """
     log_print("🧬 Adding comprehensive gene annotations...")
-
+    if species not in ("human", "mouse"):
+        raise ValueError(f"Unknown species '{species}'. Use 'human' or 'mouse'.")
+    log_print(f"🧬 Target species: {species}")
+    
     # Create reference files dict for internal use
     REFERENCE_FILES = {
         "ribosomal_genes": ribosomal_genes_path,
         "gene_database": gene_database_path,
         "cell_cycle_genes": cell_cycle_genes_path
     }
+    # ---- init annotation columns ----
+    adata.var["gene_type"] = ""
+    adata.var["gene"] = ""  # gene symbols
+    adata.var["chromosome"] = ""
+    adata.var["ribosomal"] = False
+    adata.var["cell_cycle"] = False
+    adata.var["cell_cycle_phase"] = ""
+    adata.var["pct_cells_expressed"] = 0.0
 
-    # Load ribosomal genes from tab-separated file - use "HGNC ID" column
-    ribosomal_hgnc_ids = set()
-    with open(REFERENCE_FILES["ribosomal_genes"]) as f:
-        header = f.readline().strip().split('\t')
-        hgnc_col = header.index("HGNC ID")
-        for line in f:
-            cols = line.strip().split('\t')
-            if len(cols) > hgnc_col:
-                ribosomal_hgnc_ids.add(cols[hgnc_col])
+    if species == "human":
+        adata.var['hgnc_id'] = ''
+        # Load ribosomal genes from tab-separated file - use "HGNC ID" column
+        ribosomal_hgnc_ids = set()
+        with open(REFERENCE_FILES["ribosomal_genes"]) as f:
+            header = f.readline().strip().split('\t')
+            hgnc_col = header.index("HGNC ID")
+            for line in f:
+                cols = line.strip().split('\t')
+                if len(cols) > hgnc_col:
+                    ribosomal_hgnc_ids.add(cols[hgnc_col])
+        log_print(f"  📋 Loaded {len(ribosomal_hgnc_ids)} ribosomal HGNC IDs")
+        log_print(f"  📋 Sample ribosomal HGNC IDs: {list(ribosomal_hgnc_ids)[:5]}")
 
-    log_print(f"  📋 Loaded {len(ribosomal_hgnc_ids)} ribosomal HGNC IDs")
-    log_print(f"  📋 Sample ribosomal HGNC IDs: {list(ribosomal_hgnc_ids)[:5]}")
+    else:
+        with open(REFERENCE_FILES["ribosomal_genes"]) as f:
+            ribosomal_genes_list = [x.strip() for x in f]
+            ribosomal_gene_symbols = set(ribosomal_genes_list)  # For fast lookup
+        log_print(f"  📋 Loaded {len(ribosomal_gene_symbols)} ribosomal gene")
+        log_print(f"  📋 Sample ribosomal gene: {list(ribosomal_gene_symbols)[:5]}")
 
     # Load gencode database
     db = gffutils.FeatureDB(REFERENCE_FILES["gene_database"])
-
-    # Initialize annotation columns
-    adata.var['gene_type'] = ''
-    adata.var['hgnc_id'] = ''
-    adata.var['gene'] = ''  # Gene symbols
-    adata.var['chromosome'] = ''
-    adata.var['ribosomal'] = False
-    adata.var['cell_cycle'] = False
-    adata.var['cell_cycle_phase'] = ''
-    adata.var['pct_cells_expressed'] = 0.0
 
     # Calculate % cells expressed (using expression threshold > 0)
     log_print("  📊 Calculating % cells expressed...")
@@ -650,34 +659,44 @@ def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_databas
     error_count = 0
 
     for i, gene_id in enumerate(adata.var.index):
-        if i < 5:  # Debug first 5 genes
+        if i < 5:
             log_print(f"  🔍 Trying to annotate gene {i+1}: {gene_id}")
-
         try:
-            # Query database for this gene by ID
-            gene = db[gene_id]
-            if i < 5:
-                log_print(f"    ✅ Found gene {gene_id} in database")
+            try:
+                gene = db[gene_id]
+            except gffutils.exceptions.FeatureNotFoundError:
+                clean_id = gene_id.split(".", 1)[0]
+                try:
+                    gene = db[clean_id]
+                    if i < 5:
+                        log_print(f"    ✅ Found gene {gene_id} in database (using ID {clean_id})")
+                except gffutils.exceptions.FeatureNotFoundError:
+                    missing_count += 1
+                    continue
 
             # Extract annotations - handle missing attributes gracefully
             # NOTE: We use .get() here because not all genes have all attributes (e.g., some lack hgnc_id)
             # This is expected and OK - we should NOT raise errors for missing optional attributes
-            gene_type = gene.attributes.get('gene_type', [''])[0]
-            hgnc_id = gene.attributes.get('hgnc_id', [''])[0]
+            gene_type = gene.attributes.get('gene_biotype', [''])[0]
             gene_name = gene.attributes.get('gene_name', [''])[0]
 
             if i < 5:
-                log_print(f"    📋 Gene info: type={gene_type}, hgnc={hgnc_id}, name={gene_name}, chr={gene.seqid}")
+                log_print(f"    📋 Gene info: type={gene_type}, name={gene_name}, chr={gene.seqid}")
 
             # Update annotations
             adata.var.loc[gene_id, 'gene_type'] = gene_type
-            adata.var.loc[gene_id, 'hgnc_id'] = hgnc_id
             adata.var.loc[gene_id, 'gene'] = gene_name  # Add gene symbols
             adata.var.loc[gene_id, 'chromosome'] = gene.seqid
 
-            # Check ribosomal genes (by HGNC ID)
-            if hgnc_id in ribosomal_hgnc_ids:
-                adata.var.loc[gene_id, 'ribosomal'] = True
+            # Check ribosomal
+            if species == "human":
+                hgnc_id = gene.attributes.get("hgnc_id", [""])[0]
+                adata.var.at[gene_id, "hgnc_id"] = hgnc_id
+                if hgnc_id and (hgnc_id in ribosomal_hgnc_ids):
+                    adata.var.at[gene_id, "ribosomal"] = True
+            else:
+                if gene_name and (gene_name in ribosomal_gene_symbols):
+                    adata.var.at[gene_id, "ribosomal"] = True
 
             # Check cell cycle genes (by gene name)
             if gene_name in cell_cycle_genes:
@@ -706,7 +725,8 @@ def add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_databas
 
     # Calculate mitochondrial genes using annotated gene symbols
     log_print("  🧬 Calculating mitochondrial gene scores...")
-    mt_genes = adata.var["gene"].str.startswith("MT-", na=False)
+    mt_genes = adata.var["gene"].astype(str).str.upper().str.startswith("MT-", na=False)
+
     log_print(f"  📊 Found {mt_genes.sum()} mitochondrial genes")
 
     if mt_genes.sum() > 0:

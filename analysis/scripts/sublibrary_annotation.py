@@ -324,6 +324,7 @@ def main():
                         help="Data source (main, undetermined, or all)")
     parser.add_argument("--processing", required=True, choices=["raw", "trimmed", "recovered", "merged"],
                         help="Processing state (raw, trimmed, recovered, or merged)")
+    parser.add_argument("--species", required=True, choices=["human", "mouse"], help="Species for genome/MT/cell-cycle annotation (human or mouse)")
 
     args = parser.parse_args()
 
@@ -433,7 +434,7 @@ def main():
 
         # 4. GENE ANNOTATION
         log_print("\n🏷️  4. ADDING GENE ANNOTATIONS...")
-        add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path)
+        add_comprehensive_gene_annotations(adata, ribosomal_genes_path, gene_database_path, cell_cycle_genes_path, species = args.species)
 
         # 5. QC METRICS
         log_print("\n📊 5. CALCULATING QC METRICS...")

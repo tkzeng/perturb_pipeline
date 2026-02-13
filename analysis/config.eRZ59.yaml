@@ -1,0 +1,237 @@
+# ======================
+# sample file
+# ======================
+# project_dir: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/"
+
+results_dir: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/result/"
+# same guide_file for all sublibrary:
+guide_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/eRZ58_guides.txt"
+
+## for 15k cells test (eRZ58_20A,40B,60C):
+
+# analysis_name: "eRZ58_20A_analysis"
+# sample_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ58_20A.xlsx"
+# plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ58A.xlsx"
+
+# analysis_name: "eRZ58_40B_analysis"
+# sample_info_file:  "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ58_40B.xlsx"
+# plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ58B.xlsx"
+
+# analysis_name: "eRZ58_60C_analysis"
+# sample_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ58_60C.xlsx"
+# plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ58C.xlsx"
+
+#-------------------------------------------------------------------
+## for 4M cells (eRZ58_1-16A,21-36B,41-56C; eRZ59_61-76):
+# analysis_name: "eRZ58A_analysis"
+# sample_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ58A.xlsx"
+# plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ58A.xlsx"
+
+# analysis_name: "eRZ58B_analysis"
+# sample_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ58B.xlsx"
+# plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ58B.xlsx"
+
+analysis_name: "eRZ58C_analysis"
+sample_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ58C.xlsx"
+plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ58C.xlsx"
+
+# analysis_name: "eRZ59_analysis"
+# sample_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/sample_info_eRZ59.xlsx"
+# plate_maps_file: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/plate_map_eRZ59.xlsx" #some wells not used (B1,F3,H3,H7), just deleted those rows
+
+
+# Sample selection (leave empty to process all samples in sample_info_file)
+sample_ids: []
+
+# SLURM cluster configuration
+slurm:
+  partition: "engreitz,owners,normal"  # Comma-separated list of partitions  "engreitz,owners,normal" 
+  account: "engreitz"  # SLURM account for job submission
+
+analysis:
+  # Species
+  species: "mouse" # or human 
+  # Chemistry v2:
+  # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111
+  # kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
+  #
+  # Chemistry v3:
+  # Amplicon: NNNNNNNNNN33333333ATGAGGGGTCAG22222222TCCAACCACCTC11111111
+  # kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"
+  kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"  # Using v3 chemistry
+
+
+  # IT IS OPTIONAL TO ADJUST THESE -> -> ->
+  combinations:  # Which source/processing combinations to run
+    - ["main", "raw"]  # Options: ["main", "raw"], ["all", "merged"], etc.
+  strand: "forward"  # Options: "forward" or "unstranded"
+  genome_types: ["all"]
+  index_prefix: "nascent"
+
+input_paths:
+  # Chemistry v2:
+  # - 96-well kit: Use replace.96_v2.txt and barcodes.96_v2.txt
+  # - 48-well kit: Use replace.48_v2.txt and barcodes.48_v2.txt  
+  # - Mini kit (12-well): Use replace.12_v2.txt and barcodes.12_v2.txt
+  #
+  # Chemistry v3:
+  # - 96-well kit: Use replace.96_v3.txt and barcodes.96_v3.txt
+  # - 48-well kit: Use replace.48_v3.txt and barcodes.48_v3.txt
+  # - Mini kit (12-well): Use replace.12_v3.txt and barcodes.12_v3.txt
+  replace_file: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/v3_barcodes/replace_96_v3.txt"
+  barcodes_file: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/v3_barcodes/barcodes_96_v3.txt"
+
+
+  # Chemistry v2:
+  # - 96-well: bc_data_n198_v5.csv
+  # - 48-well: bc_data_n99_v5.csv
+  # - 12-well: bc_data_n24_v4.csv
+  #
+  # Chemistry v3:
+  # - 96-well: bc_data_n299_R1_v3_6.csv
+  # - 48-well: bc_data_n141_R1_v3_6.csv
+  # - 12-well: bc_data_n37_R1_v3_6.csv
+  parsebio_barcodes: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/ParseBiosciences-Pipeline.1.5.1_updated_barcode_v1_v3/splitpipe/barcodes/bc_data_n299_R1_v3_6.csv"
+
+  
+  # Guide reference file for QC analysis; ID + target gene 
+  guide_reference: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/analysis/references_eRZ59/eRZ58_guides_qc_reference.txt"
+
+
+  # IT IS OPTIONAL TO ADJUST THESE -> -> ->
+  # If not doing undetermined read recovery (processing="raw" only), this file is not used
+  primer_info_file: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/split_lp_primer.xlsx"
+  
+  # Gene annotation reference files
+  ribosomal_genes: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference/genes_list_ribosomal.filtered.txt"
+  cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference/regev_lab_cell_cycle_genes_convert_to_mouse.txt"
+  gene_database:    "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference/Mus_musculus.GRCm39.108.annotation.db"
+
+  # Reference genome/index locations
+  reference_base: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference"
+  nascent_genome: "nascent_all"  # Subdirectory with genome index files
+  
+
+
+# IT IS OPTIONAL TO ADJUST THESE -> -> ->
+
+# Cell calling parameters
+cell_calling:
+  # Methods to run (comment out any methods you want to skip)
+  # Available methods: Expected_Cells, UMI_Threshold, 
+  #                   EmptyDrops_FDR_X (where X is the FDR cutoff, e.g., EmptyDrops_FDR_0.001),
+  #                   BarcodeRanks_Knee, BarcodeRanks_Inflection
+  #
+  # DEPRECATED: EmptyDrops methods are deprecated
+  #   - Found to be too lenient for current data, producing too many false positive cells
+  #   - BarcodeRanks methods (Knee/Inflection) are recommended instead
+  #   - EmptyDrops code is preserved but not actively maintained
+  methods_to_run:
+    - Expected_Cells
+    - UMI_Threshold
+    # - EmptyDrops_FDR_0.001  # DEPRECATED - too lenient for current data
+    # - EmptyDrops_FDR_0.01   # DEPRECATED - too lenient for current data  
+    # - EmptyDrops_FDR_0.05   # DEPRECATED - too lenient for current data
+    - BarcodeRanks_Knee
+    - BarcodeRanks_Inflection
+  
+  # Default method to use for saturation analysis and other downstream analyses
+  default_method:  "BarcodeRanks_Inflection" #"BarcodeRanks_Inflection"
+  
+  # Default parameters (will be overridden by sample_info.tsv values)
+  defaults:
+    expected_cells: 5000
+    min_umi_threshold: 50
+    emptydrops_lower: 100  # DEPRECATED - kept for backwards compatibility
+    saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
+    cell_calling_groupby_col: "biological_sample" #"biological_sample" # null
+    expected_cells_per_biosample: 200
+    min_umi_threshold_per_biosample: 50
+
+
+# Barcode recovery parameters
+barcode_recovery:
+  max_reads_recovery: null  # null = process all reads
+  max_shift: 4
+
+# Undetermined recovery parameters
+undetermined_recovery:
+  max_open_files: 5000
+
+# QC analysis parameters
+qc_analysis:
+  guide_cutoffs: [1, 2, 3, 4, 5]
+
+# Sublibrary filtering parameters
+sublibrary_filtering:
+  guide_assignment_cutoff: 1 # default is 5
+  skip_barcode_filtering: true
+  min_umi_filter: 1 # 50 default， 10 is refer to split pipe 
+
+# QC filtering parameters 
+qc_filtering:
+  gmm_fallback_method: "percentile_95"  # Fallback method when 2D GMM doesn't converge
+
+# Cell quality filtering thresholds
+# NOTE: These are currently UNUSED in the pipeline - apply_cell_filters() is never called
+# TODO: Remove or implement cell filtering in the pipeline
+# cell_filtering:
+#   max_total_counts: 40000
+#   max_mt_percent: 20
+#   min_genes: 1000
+#   default_min_counts: 2000
+
+# Resource allocation for different rule groups
+# Adjust these based on your dataset size and cluster capabilities
+resources:
+  # Heavy compute rules (kallisto alignment)
+  alignment:
+    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    threads: 8      # Reduced threads for smaller datasets
+  
+  # Heavy memory rules (matrix operations, cell calling)
+  analysis:
+    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    threads: 4      # Moderate parallelization for smaller datasets
+  
+  # Light rules (QC, stats, file operations)
+  light:
+    mem_mb: 32000   # 32GB
+    threads: 4
+
+# Sublibrary combination configuration
+combination:
+  groups:
+    all_pools:
+      pools: []  # Empty = all pools
+      name: "all_combined"
+  combine_all_pools: true
+
+# Combined sublibraries configuration
+combined_sublibraries:
+  # Cell calling method to use for creating combined sublibrary files
+  # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
+  #          BarcodeRanks_Knee, BarcodeRanks_Inflection
+  cell_calling_method: "BarcodeRanks_Inflection"
+  # Output directory for combined sublibrary files (relative to results_base)
+  output_dir: "combined_sublibraries"
+  # Pools to include (empty list means all pools)
+  pools: []
+  # Mitochondrial cutoff key for filtering
+  mito_cutoff_key: "median_mad_2"
+
+# Perturbation preprocessing configuration
+preprocessing:
+  target_genes: ["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"]  # Target genes for analysis
+  use_gpu: false  # Use GPU acceleration (requires RAPIDS)
+  target_clusters: 3  # Target number of clusters for leiden clustering
+  n_hvgs: 2000  # Number of highly variable genes
+  clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
+  
+  # Stratification for perturbation analysis
+  stratification:
+    column: "condition"
+    values: ["72hr_wt", "168hr_wt"]
+  
+  # Non-targeting guide identifiers
+  non_targeting_strings: ["non-targeting", "non.targeting"]

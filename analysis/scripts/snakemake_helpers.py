@@ -29,7 +29,7 @@ def get_scratch_path(*parts, config=None):
 
 
 
-def get_results_path(*parts, config=None):
+def get_results_path_origin(*parts, config=None):
     """Build results directory paths automatically from analysis_name"""
     if not config:
         raise ValueError("config is required for get_results_path")
@@ -42,7 +42,28 @@ def get_results_path(*parts, config=None):
         path_parts = [str(p) for p in parts]
         return os.path.join(results_base, *path_parts)
     return results_base
+import os
 
+def get_results_path(*parts, config=None):
+    """Build results directory paths automatically from analysis_name
+    If config['results_dir'] is set, use it as base; otherwise use cwd/results_{analysis_name}.
+    """
+    if not config:
+        raise ValueError("config is required for get_results_path")
+
+    analysis_name = config["analysis_name"]
+    results_dir = config.get("results_dir", None)
+
+    if results_dir:
+        results_base = os.path.join(results_dir, f"results_{analysis_name}")
+    else:
+        results_base = os.path.join(os.getcwd(), f"results_{analysis_name}")
+
+    if parts and parts[0]:
+        path_parts = [str(p) for p in parts]
+        return os.path.join(results_base, *path_parts)
+    return results_base
+    
 
 def get_logs_path(*parts, config=None):
     """Build logs directory paths automatically from analysis_name"""
@@ -230,9 +251,14 @@ def find_fastq_file(sample_id, read, source=None, processing=None, config=None, 
                 matches = glob.glob(search_pattern)
                 if matches:
                     return matches[0]
-                
+                # Try combined naming (works for both GEX and guide if they share naming)
+                search_pattern = os.path.join(fastq_dir, f"{sample_name}*_combined_{read}.fastq.gz")
+                matches = glob.glob(search_pattern)
+                if matches:
+                    return matches[0]
+                    
                 # Try alternative naming patterns for GEX/gRNA files
-                # Pattern: GEX_R1_sub1.fastq.gz or gRNA_R1_sub1.fastq.gz
+                # Pattern: gex_R1_sub1.fastq.gz or gRNA_R1_sub1.fastq.gz
                 if '_gex' in sample_name:
                     # Extract the sub number from sample_name (e.g., sub1_gex -> sub1)
                     sub_num = sample_name.replace('_gex', '')

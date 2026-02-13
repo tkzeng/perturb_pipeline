@@ -3,6 +3,8 @@ analysis_name: "yann_k562_analysis"
 sample_info_file: "references_yann_k562/sample_info.k562_yann.xlsx"
 plate_maps_file: "references_yann_k562/plate_map.xlsx"
 guide_file: "references_yann_k562/k562_yann_guides.txt"
+# result dir
+#results_dir: "/oak/stanford/groups/engreitz/Users/ronghao/Sequencing/20251218_eRZ59_Split-seq_4M_Novaseq/perturb_pipeline/result/"
 
 # Sample selection (leave empty to process all samples in sample_info_file)
 sample_ids: []
@@ -13,15 +15,17 @@ slurm:
   account: "pritch"  # SLURM account for job submission
 
 analysis:
+  # Species
+  species: "mouse" # or human 
   # Chemistry v2:
   # Amplicon: NNNNNNNNNN33333333GTGGCCGATGTTTCGCATCGGCGTACGACT22222222ATCCACGTGCTTGAGACTGTGG11111111
   # kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"
   #
   # Chemistry v3:
   # Amplicon: NNNNNNNNNN33333333ATGAGGGGTCAG22222222TCCAACCACCTC11111111
+  # need to be double check 
   # kb_chemistry: "1,10,18,1,30,38,1,50,58:1,0,10:0,0,0"
   kb_chemistry: "1,10,18,1,48,56,1,78,86:1,0,10:0,0,0"  # Using v2 chemistry
-
 
   # IT IS OPTIONAL TO ADJUST THESE -> -> ->
   combinations:  # Which source/processing combinations to run
@@ -78,9 +82,17 @@ input_paths:
   cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
   gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
 
-  # Reference genome/index locations
-  reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
-  nascent_genome: "nascent_all"  # Subdirectory with genome index files
+  # mouse
+  # # Reference genome/index locations
+
+  #   # Gene annotation reference files
+  # ribosomal_genes: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference/genes_list_ribosomal.filtered.txt"
+  # cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference/regev_lab_cell_cycle_genes_convert_to_mouse.txt"
+  # gene_database:    "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference/Mus_musculus.GRCm39.108.annotation.db"
+
+  # # Reference genome/index locations
+  # reference_base: "/oak/stanford/groups/engreitz/Users/ronghao/Split-seq/perturb_pipeline/mouse_reference"
+  # nascent_genome: "nascent_all"  # Subdirectory with genome index files
   
 
 
@@ -115,23 +127,30 @@ cell_calling:
     min_umi_threshold: 100
     emptydrops_lower: 100  # DEPRECATED - kept for backwards compatibility
     saturation_points: [0.1, 0.25, 0.5, 0.75, 1.0]
+    cell_calling_groupby_col: "biological_sample" #"biological_sample" # null
+    expected_cells_per_biosample: 200
+    min_umi_threshold_per_biosample: 50
+
 
 # Barcode recovery parameters
+# no use now
 barcode_recovery:
   max_reads_recovery: null  # null = process all reads
   max_shift: 4
 
 # Undetermined recovery parameters
+# no use now
+
 undetermined_recovery:
   max_open_files: 5000
 
 # QC analysis parameters
 qc_analysis:
-  guide_cutoffs: [1, 2, 3, 4, 5]
+  guide_cutoffs: [1, 2, 3, 4, 5] # for plot making 
 
 # Sublibrary filtering parameters
 sublibrary_filtering:
-  guide_assignment_cutoff: 5
+  guide_assignment_cutoff: 5 # change to 1 
   skip_barcode_filtering: true
   min_umi_filter: 100
 
@@ -153,7 +172,7 @@ qc_filtering:
 resources:
   # Heavy compute rules (kallisto alignment)
   alignment:
-    mem_mb: 64000   # 64GB (reduced for smaller datasets)
+    mem_mb: 64000   # 64GB (reduced for smaller datasets) -> 128
     threads: 8      # Reduced threads for smaller datasets
   
   # Heavy memory rules (matrix operations, cell calling)
@@ -174,31 +193,31 @@ combination:
       name: "all_combined"
   combine_all_pools: true
 
-# Combined sublibraries configuration
-combined_sublibraries:
-  # Cell calling method to use for creating combined sublibrary files
-  # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
-  #          BarcodeRanks_Knee, BarcodeRanks_Inflection
-  cell_calling_method: "Expected_Cells"
-  # Output directory for combined sublibrary files (relative to results_base)
-  output_dir: "combined_sublibraries"
-  # Pools to include (empty list means all pools)
-  pools: []
-  # Mitochondrial cutoff key for filtering
-  mito_cutoff_key: "median_mad_2"
+# # Combined sublibraries configuration
+# combined_sublibraries:
+#   # Cell calling method to use for creating combined sublibrary files
+#   # Options: Expected_Cells, UMI_Threshold, EmptyDrops_FDR_X (where X is FDR cutoff),
+#   #          BarcodeRanks_Knee, BarcodeRanks_Inflection
+#   cell_calling_method: "Expected_Cells"
+#   # Output directory for combined sublibrary files (relative to results_base)
+#   output_dir: "combined_sublibraries"
+#   # Pools to include (empty list means all pools)
+#   pools: []
+#   # Mitochondrial cutoff key for filtering
+#   mito_cutoff_key: "median_mad_2"
 
-# Perturbation preprocessing configuration
-preprocessing:
-  target_genes: ["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"]  # Target genes for analysis
-  use_gpu: false  # Use GPU acceleration (requires RAPIDS)
-  target_clusters: 3  # Target number of clusters for leiden clustering
-  n_hvgs: 2000  # Number of highly variable genes
-  clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
+# # Perturbation preprocessing configuration
+# preprocessing:
+#   target_genes: ["TP53", "CDKN1A", "FDPS", "RABGGTA", "MRPL34", "QARS"]  # Target genes for analysis
+#   use_gpu: false  # Use GPU acceleration (requires RAPIDS)
+#   target_clusters: 3  # Target number of clusters for leiden clustering
+#   n_hvgs: 2000  # Number of highly variable genes
+#   clustering_resolutions: [0.05, 0.1, 0.15, 0.2, 0.3, 0.5]  # Leiden clustering resolutions to try
   
-  # Stratification for perturbation analysis
-  stratification:
-    column: "condition"
-    values: ["72hr_wt", "168hr_wt"]
+#   # Stratification for perturbation analysis
+#   stratification:
+#     column: "condition"
+#     values: ["72hr_wt", "168hr_wt"]
   
-  # Non-targeting guide identifiers
-  non_targeting_strings: ["non-targeting", "non.targeting"]
+#   # Non-targeting guide identifiers
+#   non_targeting_strings: ["non-targeting", "non.targeting"]

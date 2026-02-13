@@ -27,6 +27,8 @@ parser$add_argument('--expected_cells', type='integer', default=0, help='Expecte
 parser$add_argument('--run_emptydrops', action='store_true', default=FALSE, help='Run EmptyDrops analysis')
 parser$add_argument('--run_barcoderanks', action='store_true', default=FALSE, help='Run BarcodeRanks analysis')
 parser$add_argument('--fdr_cutoffs', type='character', help='Comma-separated FDR cutoffs for EmptyDrops')
+parser$add_argument('--run_by_group', action='store_true', default=FALSE, help='If set, run BarcodeRanks per group using counts_filtered/barcode_with_group.csv')
+parser$add_argument('--plot_dir', required=TRUE, help='Plot output directory')
 
 args <- parser$parse_args()
 
@@ -41,7 +43,10 @@ cat("Using", args$ncores, "cores for parallel processing\n")
 
 # Create output directory
 dir.create(args$output_dir, recursive = TRUE, showWarnings = FALSE)
+plot_dir <- file.path(args$plot_dir, "dropletutills_plots")
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
 
+cat("Plot storage path:", plot_dir,  "\n")
 cat("Loading count matrix from:", args$kb_dir, "\n")
 
 # Load kallisto count matrix directly
@@ -122,9 +127,256 @@ if (args$run_barcoderanks) {
   
   cat("BarcodeRanks knee:", n_cells_knee, "cells\n")
   cat("BarcodeRanks inflection:", n_cells_inflection, "cells\n")
+
+  # ---- Save global BarcodeRanks plot ----
+  plot_file_all <- file.path(plot_dir, "all_samples_BarcodeRanks.png")
+
+  png(filename = plot_file_all, width = 1800, height = 1300, res = 220)
+
+  plot(br_out$rank, br_out$total,
+      log = "xy",
+      xlab = "Rank",
+      ylab = "Total UMI count",
+      main = paste0("BarcodeRanks (ALL): ", args$sample_id,
+                    " | n=", ncol(count_matrix)),
+      pch = 16, cex = 0.4)
+
+  o <- order(br_out$rank)
+  lines(br_out$rank[o], br_out$fitted[o], col="red",lwd=2)
+
+  abline(h=knee_threshold, col="dodgerblue", lty=2, lwd=2)
+  abline(h=inflection_threshold, col="forestgreen", lty=2, lwd=2)
+
+  legend("bottomleft",
+        lty = 2, lwd = 2,
+        col = c("dodgerblue", "forestgreen"),
+        legend = c(
+          sprintf("knee: UMI>=%.0f | n_cells=%d", knee_threshold, n_cells_knee),
+          sprintf("inflection: UMI>=%.0f | n_cells=%d", inflection_threshold, n_cells_inflection)
+        ),
+        bty = "n")
+
+  dev.off()
 } else {
   cat("Skipping barcodeRanks analysis (not requested)\n")
 }
+
+# -----------------------------
+# Calling cells by Per-group BarcodeRanks (optional, runs AFTER the global barcodeRanks)
+# -----------------------------
+
+# loading barcode_with_group_list for cell calling
+
+if (args$run_by_group) {
+  barcode_with_group_file <- file.path(counts_dir, "barcode_with_group.csv")
+  meta <- read.csv(barcode_with_group_file, stringsAsFactors = FALSE)
+  group_col <- "cell_calling_by_group"
+
+  if (!("barcode" %in% colnames(meta))) stop("barcode_with_group.csv missing column: barcode")
+  if (!(group_col %in% colnames(meta))) stop(paste0("barcode_with_group.csv missing column: ", group_col))
+
+  idx <- match(colnames(count_matrix), meta$barcode)
+  if (any(is.na(idx))) {
+    missing <- colnames(count_matrix)[is.na(idx)]
+    stop(paste0("barcode_with_group.csv missing ", length(missing), " barcodes. Example: ", missing[1]))
+  }
+  meta <- meta[idx, , drop=FALSE]
+  if (!all(meta$barcode == colnames(count_matrix))) stop("Barcode order not aligned!")
+
+  group_ids <- meta[[group_col]]
+  groups <- unique(group_ids[!is.na(group_ids)])
+
+  cat("Cell calling split by group:", length(groups), "groups\n")
+}
+
+if (args$run_barcoderanks && args$run_by_group) {
+  cat("Running BarcodeRanks by group...\n")
+
+  group_summary_list <- list()
+  group_results_rows <- list()  # per-barcode results for plotting
+
+  for (g in groups) {
+    g_safe <- gsub("[^A-Za-z0-9_.-]+", "_", as.character(g))
+    keep <- (group_ids == g)
+    if (sum(keep) == 0) next
+
+    current_counts <- count_matrix[, keep, drop=FALSE]
+    current_total  <- colSums(current_counts)
+    n_unique_total <- length(unique(as.numeric(current_total)))
+    n_barcodes <- length(current_total)
+    
+    cat("Group:", g,"n_barcodes:", n_barcodes,"n_unique_total:", n_unique_total, "\n")
+    
+    # if too few barcodes, record zeros and continue
+    if (n_barcodes < 3 || n_unique_total < 10) {
+      cat("  [WARN] Skip barcodeRanks for group", g, "because n_barcodes < 3 or unique total < 10 \n")
+
+      group_summary_list[[length(group_summary_list) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        method = "BarcodeRanks_Knee",
+        n_cells_called = 0,
+        threshold_used = NA,
+        umis_in_cells_pct = 0,
+        n_barcodes_tested = n_barcodes,
+        n_unique_total = n_unique_total
+      )
+      group_summary_list[[length(group_summary_list) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        method = "BarcodeRanks_Inflection",
+        n_cells_called = 0,
+        threshold_used = NA,
+        umis_in_cells_pct = 0,
+        n_barcodes_tested = n_barcodes,
+        n_unique_total = n_unique_total
+      )
+
+      rm(current_counts, current_total); gc()
+      next
+    }
+
+    # run barcodeRanks with error capture
+    tryCatch({
+      # IMPORTANT: for small groups, exclude.from should be small or 0
+      # Here keep simplest: no exclude.from in group mode (your current choice).
+      br_g <- barcodeRanks(current_counts, df=5)
+
+      knee_g <- metadata(br_g)$knee
+      infl_g <- metadata(br_g)$inflection
+
+      is_knee_g <- current_total >= knee_g
+      is_infl_g <- current_total >= infl_g
+
+      total_umis_g <- sum(current_total)
+
+      # summary rows
+      group_summary_list[[length(group_summary_list) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        method = "BarcodeRanks_Knee",
+        n_cells_called = sum(is_knee_g),
+        threshold_used = knee_g,
+        umis_in_cells_pct = ifelse(total_umis_g > 0, sum(current_total[is_knee_g]) / total_umis_g * 100, 0),
+        n_barcodes_tested = n_barcodes,
+        n_unique_total = n_unique_total
+      )
+      group_summary_list[[length(group_summary_list) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        method = "BarcodeRanks_Inflection",
+        n_cells_called = sum(is_infl_g),
+        threshold_used = infl_g,
+        umis_in_cells_pct = ifelse(total_umis_g > 0, sum(current_total[is_infl_g]) / total_umis_g * 100, 0),
+        n_barcodes_tested = n_barcodes,
+        n_unique_total = n_unique_total
+      )
+
+      # per-barcode table for plotting knee curves
+      br_df <- as.data.frame(br_g)
+      # align to current barcodes order
+      idx <- match(colnames(current_counts), rownames(br_df))
+      br_rank_vec <- rep(NA_real_, n_barcodes)
+      br_fit_vec  <- rep(NA_real_, n_barcodes)
+      if (any(!is.na(idx))) {
+        br_rank_vec[!is.na(idx)] <- br_df$rank[idx[!is.na(idx)]]
+        br_fit_vec[!is.na(idx)]  <- br_df$fitted[idx[!is.na(idx)]]
+      }
+
+      group_results_rows[[length(group_results_rows) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        barcode = colnames(current_counts),
+        total_counts = as.numeric(current_total),
+        rank = rank(-as.numeric(current_total), ties.method = "first"),
+        br_rank = br_rank_vec,
+        br_fitted = br_fit_vec,
+        knee_threshold = knee_g,
+        inflection_threshold = infl_g,
+        is_cell_knee = as.logical(is_knee_g),
+        is_cell_inflection = as.logical(is_infl_g),
+        stringsAsFactors = FALSE
+      )
+      # ---- Save BarcodeRanks plot per group ----
+      plot_file <- file.path(plot_dir, paste0(g_safe, "_BarcodeRanks.png"))
+
+      png(filename = plot_file, width = 1600, height = 1200, res = 200)
+
+      # dropletutils doc style plot: rank vs total (log-log)
+      plot(br_g$rank, br_g$total,
+          log = "xy",
+          xlab = "Rank",
+          ylab = "Total UMI count",
+          main = paste0("BarcodeRanks: ", args$sample_id, " | group: ", g),
+          pch = 16, cex = 0.4)
+
+      o <- order(br_g$rank)
+      lines(br_g$rank[o], br_g$fitted[o], col = "red", lwd = 2)
+
+      abline(h = knee_g, col = "dodgerblue", lty = 2, lwd = 2)
+      abline(h = infl_g, col = "forestgreen", lty = 2, lwd = 2)
+
+      legend("bottomleft",
+            lty = 2,
+            lwd = 2,
+            col = c("dodgerblue", "forestgreen"),
+            legend = c(
+              sprintf("knee: UMI>=%.0f | n_cells=%d", knee_g, sum(is_knee_g)),
+              sprintf("inflection: UMI>=%.0f | n_cells=%d", infl_g, sum(is_infl_g))
+            ),
+            bty = "n")
+
+      dev.off()
+
+      rm(br_g, br_df)
+
+    }, error = function(e) {
+      cat(paste0("  [ERROR] BarcodeRanks FAILED for group ", g, ". Error: ", e$message, "\n"))
+      cat("  -> Record n_cells_called=0 and continue.\n")
+
+      group_summary_list[[length(group_summary_list) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        method = "BarcodeRanks_Knee",
+        n_cells_called = 0,
+        threshold_used = NA,
+        umis_in_cells_pct = 0,
+        n_barcodes_tested = n_barcodes,
+        n_unique_total = n_unique_total
+      )
+      group_summary_list[[length(group_summary_list) + 1]] <- data.frame(
+        sample_id = args$sample_id,
+        group = g,
+        method = "BarcodeRanks_Inflection",
+        n_cells_called = 0,
+        threshold_used = NA,
+        umis_in_cells_pct = 0,
+        n_barcodes_tested = n_barcodes,
+        n_unique_total = n_unique_total
+      )
+    })
+
+    rm(current_counts, current_total)
+    gc()
+  }
+
+  # write summary_by_group
+  if (length(group_summary_list) > 0) {
+    group_summary <- do.call(rbind, group_summary_list)
+    write.table(group_summary,
+      file = file.path(args$output_dir, "cell_calling_summary_by_group.tsv"),
+      sep = "\t", row.names = FALSE, quote = FALSE)
+  }
+
+  # write per-barcode results for plotting
+  if (length(group_results_rows) > 0) {
+    group_results <- do.call(rbind, group_results_rows)
+    write.table(group_results,
+      file = file.path(args$output_dir, "dropletutils_results_by_group.tsv"),
+      sep = "\t", row.names = FALSE, quote = FALSE)
+  }
+}
+
 
 # Initialize EmptyDrops results with NA
 e_out <- list(
