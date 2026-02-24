@@ -76,11 +76,11 @@ input_paths:
   # Gene annotation reference files
   ribosomal_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/ribosomal.txt"
   cell_cycle_genes: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/regev_lab_cell_cycle_genes.txt"
-  gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/gencode.v46.annotation.db"
+  gene_database: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references/igvf_official/transcriptome/IGVFFI9573KOZR.db"
 
   # Reference genome/index locations
   reference_base: "/oak/stanford/groups/engreitz/Users/tonyzeng/GW_PERTURB/references"
-  nascent_genome: "nascent_all"  # Subdirectory with genome index files
+  nascent_genome: "igvf_official/nascent_index"  # Subdirectory with genome index files
   
 
 
