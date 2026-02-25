@@ -30,6 +30,7 @@ SCRATCH = get_scratch_path(config=config)
 RESULTS = get_results_path(config=config)
 LOGS = get_logs_path(config=config)
 REFERENCES = get_reference_path(config=config)
+NASCENT_GENOME = os.path.join(REFERENCES, config["input_paths"]["nascent_genome"])
 
 # Print configuration at startup
 print_path_configuration(config)
@@ -309,10 +310,10 @@ rule kallisto_gex:
         fq2=lambda wildcards: find_fastq_file_wrapper(wildcards.sample_id, "R2", wildcards.source, wildcards.processing),
         replace=config["input_paths"]["replace_file"],
         barcodes=config["input_paths"]["barcodes_file"],
-        index_idx=f"{REFERENCES}/nascent_all/index.idx",
-        t2g=f"{REFERENCES}/nascent_all/t2g.txt",
-        cdna=f"{REFERENCES}/nascent_all/cdna.txt",
-        nascent=f"{REFERENCES}/nascent_all/nascent.txt",
+        index_idx=f"{NASCENT_GENOME}/index.idx",
+        t2g=f"{NASCENT_GENOME}/t2g.txt",
+        cdna=f"{NASCENT_GENOME}/cdna.txt",
+        nascent=f"{NASCENT_GENOME}/nascent.txt",
         # Ensure barcode recovery is done first if processing recovered reads
         recovery_done=lambda wildcards: f"{SCRATCH}/barcode_recovery/{wildcards.source}/{wildcards.sample_id}_stats.txt" if wildcards.processing == "recovered" else [],
         # Script dependency
@@ -412,10 +413,10 @@ rule kallisto_gex_subsampled:
         read_counts=f"{RESULTS}/{{sample_id}}/counts.txt",
         replace=config["input_paths"]["replace_file"],
         barcodes=config["input_paths"]["barcodes_file"],
-        index_idx=f"{REFERENCES}/nascent_all/index.idx",
-        t2g=f"{REFERENCES}/nascent_all/t2g.txt",
-        cdna=f"{REFERENCES}/nascent_all/cdna.txt",
-        nascent=f"{REFERENCES}/nascent_all/nascent.txt",
+        index_idx=f"{NASCENT_GENOME}/index.idx",
+        t2g=f"{NASCENT_GENOME}/t2g.txt",
+        cdna=f"{NASCENT_GENOME}/cdna.txt",
+        nascent=f"{NASCENT_GENOME}/nascent.txt",
         script="scripts/run_kb_count.py"
     output:
         kb_info=f"{SCRATCH}/tmp/umi_sat_{{sample_id}}-{{fraction}}/kb_all/kb_info.json",
