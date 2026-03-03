@@ -290,13 +290,13 @@ rule generate_combined_whitelist:
     input:
         barcodes=config["input_paths"]["barcodes_file"],
         script="scripts/generate_barcode_combinations.py"
-    # output:
-    #     combined=f"{REFERENCES}/barcodes_combined.txt"
+    output:
+        combined=f"{REFERENCES}/barcodes_combined.txt"
     log:
         f"{LOGS}/generate_combined_whitelist.log"
     shell:
         """
-        python {input.script} {input.barcodes} {REFERENCES}/barcodes_combined.txt &> {log}
+        python {input.script} {input.barcodes} {output.combined} &> {log}
         """
 
 
